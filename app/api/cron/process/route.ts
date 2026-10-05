@@ -1,11 +1,37 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { waitUntil } from '@vercel/functions';
 import { runDiscovery } from '../../../../lib/pipeline/discover';
-import { runTmdbResolution } from '../../../../lib/pipeline/resolve-tmdb';
+import { runTmdbResolution, syncAiringSeriesDetails } from '../../../../lib/pipeline/resolve-tmdb';
 import { runUploads } from '../../../../lib/pipeline/upload';
 import { initSchema } from '../../../../lib/db/schema';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300; 
+
+async function executePipelineJob() {
+  try {
+    await initSchema();
+    console.log('\n=======================================');
+    console.log('🕒 PIPELINE BATCH EXECUTION STARTED');
+    console.log('=======================================');
+
+    // 1. Run Discovery (1 page to keep ingestion fast & fresh)
+    await runDiscovery(1);
+
+    // 2. Resolve TMDB IDs & Sync On-Air schedules
+    await runTmdbResolution();
+    await syncAiringSeriesDetails();
+
+    // 3. Process Uploads with greedy bin-packing
+    await runUploads({ maxUploads: 8 });
+
+    console.log('\n=======================================');
+    console.log('✅ PIPELINE BATCH EXECUTION COMPLETED');
+    console.log('=======================================');
+  } catch (err) {
+    console.error('Pipeline batch execution failed:', err);
+  }
+}
 
 export async function GET(request: NextRequest) {
   // Check authorization header or query param if CRON_SECRET is configured
@@ -21,31 +47,21 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  try {
-    await initSchema(); // Ensure DB tables exist
+  const shouldWaitSync = searchParams.get('sync') === '1' || searchParams.get('wait') === 'true';
 
-    console.log('\n=======================================');
-    console.log('🕒 CRON JOB STARTED');
-    console.log('=======================================');
-
-    // 1. Run Discovery (limit to 1 page per category to save time)
-    await runDiscovery(1);
-
-    // 2. Resolve TMDB IDs & Sync On-Air drama schedules
-    await runTmdbResolution();
-    const { syncAiringSeriesDetails } = await import('../../../../lib/pipeline/resolve-tmdb');
-    await syncAiringSeriesDetails();
-
-    // 3. Process Uploads (swarm will break early if limits reached)
-    await runUploads({ maxUploads: 8 });
-
-    console.log('\n=======================================');
-    console.log('✅ CRON JOB FINISHED');
-    console.log('=======================================');
-
-    return NextResponse.json({ success: true });
-  } catch (err) {
-    console.error('Cron job failed:', err);
-    return NextResponse.json({ success: false, error: (err as Error).message }, { status: 500 });
+  if (shouldWaitSync) {
+    await executePipelineJob();
+    return NextResponse.json({ success: true, mode: 'synchronous' });
   }
+
+  // Asynchronous background execution: returns HTTP 200 in ~50ms to cron caller (e.g. cron-job.org with 30s limit),
+  // while Vercel runtime continues processing the batch in background for up to 300s!
+  waitUntil(executePipelineJob());
+
+  return NextResponse.json({
+    success: true,
+    status: 'dispatched',
+    message: 'Pipeline batch execution triggered in background via waitUntil.',
+    timestamp: new Date().toISOString(),
+  });
 }
