@@ -1,0 +1,468 @@
+/**
+ * Database queries supporting both local SQLite and Turso Cloud DB.
+ */
+
+import { dbAll, dbGet, dbRun, dbExec } from './client';
+
+// ---------------------------------------------------------------------------
+// Titles
+// ---------------------------------------------------------------------------
+
+export interface TitleRow {
+  id: number;
+  slug: string;
+  title: string;
+  kind: 'series' | 'movie';
+  year: number | null;
+  tmdb_id: number | null;
+  poster_url: string | null;
+  audio_langs: string;
+  total_seasons: number;
+  total_episodes: number;
+  is_on_air: number;
+  airing_status: string;
+  next_air_date: string | null;
+  last_air_date: string | null;
+  last_scraped_at: string | null;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function upsertTitle(data: {
+  slug: string;
+  title: string;
+  kind: 'series' | 'movie';
+  year?: number;
+  posterUrl?: string;
+  audioLangs: string[];
+}): Promise<TitleRow | undefined> {
+  await dbRun(`
+    INSERT INTO titles (slug, title, kind, year, poster_url, audio_langs)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(slug) DO UPDATE SET
+      title = excluded.title,
+      audio_langs = excluded.audio_langs,
+      poster_url = COALESCE(excluded.poster_url, titles.poster_url),
+      updated_at = datetime('now')
+  `, [
+    data.slug,
+    data.title,
+    data.kind,
+    data.year ?? null,
+    data.posterUrl ?? null,
+    JSON.stringify(data.audioLangs),
+  ]);
+
+  return getTitleBySlug(data.slug);
+}
+
+export async function getTitleBySlug(slug: string): Promise<TitleRow | undefined> {
+  return dbGet<TitleRow>('SELECT * FROM titles WHERE slug = ?', [slug]);
+}
+
+export async function getTitleByTmdbId(tmdbId: number): Promise<TitleRow | undefined> {
+  return dbGet<TitleRow>('SELECT * FROM titles WHERE tmdb_id = ?', [tmdbId]);
+}
+
+export async function getTitlesWithoutTmdb(includeFailed = false): Promise<TitleRow[]> {
+  if (includeFailed) {
+    return dbAll<TitleRow>("SELECT * FROM titles WHERE tmdb_id IS NULL");
+  }
+  return dbAll<TitleRow>("SELECT * FROM titles WHERE tmdb_id IS NULL AND status != 'failed'");
+}
+
+export async function getOnAirTitles(): Promise<TitleRow[]> {
+  return dbAll<TitleRow>("SELECT * FROM titles WHERE is_on_air = 1 OR airing_status = 'Returning Series' ORDER BY updated_at DESC");
+}
+
+export async function resetFailedTitles(): Promise<void> {
+  await dbRun("UPDATE titles SET status = 'discovered' WHERE tmdb_id IS NULL AND status = 'failed'");
+}
+
+export async function toggleDmAccountActive(id: number, isActive: boolean): Promise<void> {
+  await dbRun('UPDATE dm_accounts SET is_active = ? WHERE id = ?', [isActive ? 1 : 0, id]);
+}
+
+export async function deleteDmAccount(id: number): Promise<void> {
+  await dbRun('DELETE FROM dm_accounts WHERE id = ?', [id]);
+}
+
+export async function getTitlesByStatus(status: string): Promise<TitleRow[]> {
+  return dbAll<TitleRow>('SELECT * FROM titles WHERE status = ?', [status]);
+}
+
+export async function getAllTitles(options: { q?: string; status?: string; kind?: string; limit?: number } = {}): Promise<TitleRow[]> {
+  let sql = 'SELECT * FROM titles WHERE 1=1';
+  const params: any[] = [];
+
+  if (options.q) {
+    sql += ' AND (title LIKE ? OR slug LIKE ? OR tmdb_id LIKE ?)';
+    params.push(`%${options.q}%`, `%${options.q}%`, `%${options.q}%`);
+  }
+  if (options.status) {
+    sql += ' AND status = ?';
+    params.push(options.status);
+  }
+  if (options.kind) {
+    sql += ' AND kind = ?';
+    params.push(options.kind);
+  }
+
+  const limit = options.limit || 200;
+  sql += ' ORDER BY id DESC LIMIT ?';
+  params.push(limit);
+
+  return dbAll<TitleRow>(sql, params);
+}
+
+export async function updateTitleTmdb(
+  id: number,
+  tmdbId: number,
+  seasons?: number,
+  episodes?: number,
+  extra?: {
+    year?: number;
+    isOnAir?: boolean;
+    airingStatus?: string;
+    nextAirDate?: string;
+    lastAirDate?: string;
+    posterUrl?: string;
+  }
+): Promise<void> {
+  await dbRun(`
+    UPDATE titles SET
+      tmdb_id = ?,
+      year = COALESCE(?, year),
+      total_seasons = COALESCE(?, total_seasons),
+      total_episodes = COALESCE(?, total_episodes),
+      is_on_air = COALESCE(?, is_on_air),
+      airing_status = COALESCE(?, airing_status),
+      next_air_date = COALESCE(?, next_air_date),
+      last_air_date = COALESCE(?, last_air_date),
+      poster_url = COALESCE(?, poster_url),
+      updated_at = datetime('now')
+    WHERE id = ?
+  `, [
+    tmdbId,
+    extra?.year ?? null,
+    seasons ?? null,
+    episodes ?? null,
+    extra?.isOnAir != null ? (extra.isOnAir ? 1 : 0) : null,
+    extra?.airingStatus ?? null,
+    extra?.nextAirDate ?? null,
+    extra?.lastAirDate ?? null,
+    extra?.posterUrl ?? null,
+    id,
+  ]);
+}
+
+export async function updateTitleAiringInfo(
+  id: number,
+  data: {
+    year?: number;
+    isOnAir?: boolean;
+    airingStatus?: string;
+    nextAirDate?: string;
+    lastAirDate?: string;
+    totalEpisodes?: number;
+    lastScrapedAt?: string;
+  }
+): Promise<void> {
+  await dbRun(`
+    UPDATE titles SET
+      year = COALESCE(?, year),
+      is_on_air = COALESCE(?, is_on_air),
+      airing_status = COALESCE(?, airing_status),
+      next_air_date = ?,
+      last_air_date = COALESCE(?, last_air_date),
+      total_episodes = COALESCE(?, total_episodes),
+      last_scraped_at = COALESCE(?, last_scraped_at),
+      updated_at = datetime('now')
+    WHERE id = ?
+  `, [
+    data.year ?? null,
+    data.isOnAir != null ? (data.isOnAir ? 1 : 0) : null,
+    data.airingStatus ?? null,
+    data.nextAirDate ?? null,
+    data.lastAirDate ?? null,
+    data.totalEpisodes ?? null,
+    data.lastScrapedAt ?? null,
+    id,
+  ]);
+}
+
+export async function updateTitleStatus(id: number, status: string): Promise<void> {
+  await dbRun("UPDATE titles SET status = ?, updated_at = datetime('now') WHERE id = ?", [status, id]);
+}
+
+// ---------------------------------------------------------------------------
+// Videos
+// ---------------------------------------------------------------------------
+
+export interface VideoRow {
+  id: number;
+  title_id: number;
+  tmdb_id: number;
+  season: number | null;
+  episode: number | null;
+  is_movie: number;
+  dm_account_id: number | null;
+  dm_video_id: string | null;
+  dm_video_url: string | null;
+  dm_title: string;
+  source_url: string | null;
+  resolution: string | null;
+  file_size_mb: number | null;
+  duration_seconds: number | null;
+  upload_status: string;
+  error_message: string | null;
+  title_name?: string;
+  account_label?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function upsertVideo(data: {
+  titleId: number;
+  tmdbId: number;
+  season?: number;
+  episode?: number;
+  isMovie: boolean;
+  dmTitle: string;
+  resolution?: string;
+  fileSizeMb?: number;
+}): Promise<VideoRow | undefined> {
+  await dbRun(`
+    INSERT INTO videos (title_id, tmdb_id, season, episode, is_movie, dm_title, resolution, file_size_mb)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(tmdb_id, season, episode) DO UPDATE SET
+      resolution = COALESCE(excluded.resolution, videos.resolution),
+      file_size_mb = COALESCE(excluded.file_size_mb, videos.file_size_mb),
+      updated_at = datetime('now')
+  `, [
+    data.titleId,
+    data.tmdbId,
+    data.season ?? null,
+    data.episode ?? null,
+    data.isMovie ? 1 : 0,
+    data.dmTitle,
+    data.resolution ?? null,
+    data.fileSizeMb ?? null,
+  ]);
+
+  return getVideoByLookup(data.tmdbId, data.season, data.episode);
+}
+
+export async function getVideoByLookup(tmdbId: number, season?: number, episode?: number): Promise<VideoRow | undefined> {
+  if (season != null && episode != null) {
+    return dbGet<VideoRow>('SELECT * FROM videos WHERE tmdb_id = ? AND season = ? AND episode = ?', [tmdbId, season, episode]);
+  }
+  return dbGet<VideoRow>('SELECT * FROM videos WHERE tmdb_id = ? AND is_movie = 1', [tmdbId]);
+}
+
+export async function getVideosByTmdbId(tmdbId: number): Promise<VideoRow[]> {
+  return dbAll<VideoRow>('SELECT * FROM videos WHERE tmdb_id = ? ORDER BY season, episode', [tmdbId]);
+}
+
+export async function getAllVideos(options: { q?: string; status?: string; limit?: number } = {}): Promise<VideoRow[]> {
+  let sql = `
+    SELECT v.*, t.title as title_name, a.label as account_label
+    FROM videos v
+    LEFT JOIN titles t ON v.title_id = t.id
+    LEFT JOIN dm_accounts a ON v.dm_account_id = a.id
+    WHERE 1=1
+  `;
+  const params: any[] = [];
+
+  if (options.q) {
+    sql += ' AND (t.title LIKE ? OR v.dm_title LIKE ? OR v.dm_video_id LIKE ? OR v.tmdb_id LIKE ?)';
+    params.push(`%${options.q}%`, `%${options.q}%`, `%${options.q}%`, `%${options.q}%`);
+  }
+  if (options.status) {
+    sql += ' AND v.upload_status = ?';
+    params.push(options.status);
+  }
+
+  const limit = options.limit || 200;
+  sql += ' ORDER BY v.id DESC LIMIT ?';
+  params.push(limit);
+
+  return dbAll<VideoRow>(sql, params);
+}
+
+export async function getPendingVideos(limit = 10): Promise<VideoRow[]> {
+  return dbAll<VideoRow>("SELECT * FROM videos WHERE upload_status = 'pending' LIMIT ?", [limit]);
+}
+
+export async function updateVideoUpload(id: number, data: {
+  dmAccountId: number;
+  dmVideoId: string;
+  dmVideoUrl: string;
+  sourceUrl: string;
+  durationSeconds?: number;
+}): Promise<void> {
+  await dbRun(`
+    UPDATE videos SET
+      dm_account_id = ?,
+      dm_video_id = ?,
+      dm_video_url = ?,
+      source_url = ?,
+      duration_seconds = COALESCE(?, duration_seconds, 0),
+      upload_status = 'uploaded',
+      updated_at = datetime('now')
+    WHERE id = ?
+  `, [data.dmAccountId, data.dmVideoId, data.dmVideoUrl, data.sourceUrl, data.durationSeconds ?? null, id]);
+}
+
+export async function updateVideoHold(id: number, reason: string): Promise<void> {
+  await dbRun(`
+    UPDATE videos SET
+      upload_status = 'on_hold',
+      error_message = ?,
+      updated_at = datetime('now')
+    WHERE id = ?
+  `, [reason, id]);
+}
+
+export async function resetHoldVideos(): Promise<number> {
+  const result = await dbRun(`
+    UPDATE videos SET
+      upload_status = 'pending',
+      error_message = NULL,
+      updated_at = datetime('now')
+    WHERE upload_status = 'on_hold'
+  `);
+  return result.changes || 0;
+}
+
+export async function getHoldVideos(limit = 50): Promise<VideoRow[]> {
+  return dbAll<VideoRow>("SELECT * FROM videos WHERE upload_status = 'on_hold' ORDER BY id ASC LIMIT ?", [limit]);
+}
+
+export async function updateVideoError(id: number, error: string): Promise<void> {
+  await dbRun(`
+    UPDATE videos SET
+      upload_status = 'failed',
+      error_message = ?,
+      updated_at = datetime('now')
+    WHERE id = ?
+  `, [error, id]);
+}
+
+// ---------------------------------------------------------------------------
+// DM Accounts
+// ---------------------------------------------------------------------------
+
+export interface DmAccountRow {
+  id: number;
+  label: string;
+  api_key: string;
+  api_secret: string;
+  access_token: string | null;
+  token_expires: string | null;
+  upload_count: number;
+  daily_upload_count: number;
+  daily_duration_seconds: number;
+  daily_reset_at: string | null;
+  is_active: number;
+  last_used_at: string | null;
+  created_at: string;
+}
+
+export async function addDmAccount(data: {
+  label: string;
+  apiKey: string;
+  apiSecret: string;
+}): Promise<DmAccountRow | undefined> {
+  await dbRun(`
+    INSERT INTO dm_accounts (label, api_key, api_secret)
+    VALUES (?, ?, ?)
+  `, [data.label, data.apiKey, data.apiSecret]);
+
+  // When a new account is added to the swarm, immediately release any on-hold videos back to pending
+  await resetHoldVideos();
+
+  return dbGet<DmAccountRow>('SELECT * FROM dm_accounts WHERE label = ? ORDER BY id DESC LIMIT 1', [data.label]);
+}
+
+export const DAILY_UPLOAD_LIMIT = 14;
+export const DAILY_DURATION_LIMIT_SECONDS = 34200; // 9.5 hours
+
+async function performDailyResetIfNeeded(): Promise<void> {
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const resetRes = await dbRun(`
+    UPDATE dm_accounts
+    SET daily_upload_count = 0, daily_duration_seconds = 0, daily_reset_at = ?
+    WHERE daily_reset_at IS NULL OR daily_reset_at < ?
+  `, [today, today]);
+
+  // If any account underwent daily reset, release all on_hold videos for upload
+  if (resetRes.changes > 0) {
+    await resetHoldVideos();
+  }
+}
+
+export async function getActiveDmAccounts(): Promise<DmAccountRow[]> {
+  await performDailyResetIfNeeded();
+
+  return dbAll<DmAccountRow>(`
+    SELECT * FROM dm_accounts
+    WHERE is_active = 1 
+      AND daily_upload_count < ?
+      AND COALESCE(daily_duration_seconds, 0) < ?
+    ORDER BY daily_upload_count ASC, COALESCE(daily_duration_seconds, 0) ASC, upload_count ASC
+  `, [DAILY_UPLOAD_LIMIT, DAILY_DURATION_LIMIT_SECONDS]);
+}
+
+export async function getAllDmAccounts(): Promise<DmAccountRow[]> {
+  await performDailyResetIfNeeded();
+  return dbAll<DmAccountRow>('SELECT * FROM dm_accounts ORDER BY id ASC');
+}
+
+export async function updateDmAccountToken(id: number, token: string, expiresAt: string): Promise<void> {
+  await dbRun(`
+    UPDATE dm_accounts SET access_token = ?, token_expires = ? WHERE id = ?
+  `, [token, expiresAt, id]);
+}
+
+export async function incrementDmAccountUpload(id: number, durationSeconds = 3600): Promise<void> {
+  const today = new Date().toISOString().slice(0, 10);
+  await performDailyResetIfNeeded();
+
+  await dbRun(`
+    UPDATE dm_accounts SET
+      upload_count = upload_count + 1,
+      daily_upload_count = daily_upload_count + 1,
+      daily_duration_seconds = COALESCE(daily_duration_seconds, 0) + ?,
+      daily_reset_at = ?,
+      last_used_at = datetime('now')
+    WHERE id = ?
+  `, [durationSeconds, today, id]);
+}
+
+export async function deactivateDmAccount(id: number): Promise<void> {
+  await dbRun('UPDATE dm_accounts SET is_active = 0 WHERE id = ?', [id]);
+}
+
+// ---------------------------------------------------------------------------
+// Stats
+// ---------------------------------------------------------------------------
+
+export async function getStats(): Promise<{
+  totalTitles: number;
+  totalVideos: number;
+  uploadedVideos: number;
+  pendingVideos: number;
+  failedVideos: number;
+  activeAccounts: number;
+}> {
+  const totalTitles = ((await dbGet<{ c: number }>('SELECT COUNT(*) as c FROM titles'))?.c) || 0;
+  const totalVideos = ((await dbGet<{ c: number }>('SELECT COUNT(*) as c FROM videos'))?.c) || 0;
+  const uploadedVideos = ((await dbGet<{ c: number }>("SELECT COUNT(*) as c FROM videos WHERE upload_status = 'uploaded'"))?.c) || 0;
+  const pendingVideos = ((await dbGet<{ c: number }>("SELECT COUNT(*) as c FROM videos WHERE upload_status = 'pending'"))?.c) || 0;
+  const failedVideos = ((await dbGet<{ c: number }>("SELECT COUNT(*) as c FROM videos WHERE upload_status = 'failed'"))?.c) || 0;
+  const activeAccounts = ((await dbGet<{ c: number }>('SELECT COUNT(*) as c FROM dm_accounts WHERE is_active = 1'))?.c) || 0;
+
+  return { totalTitles, totalVideos, uploadedVideos, pendingVideos, failedVideos, activeAccounts };
+}
