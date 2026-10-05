@@ -13,6 +13,8 @@ import {
   getAllTitles,
   getVideosByTmdbId,
   getHoldVideos,
+  getActiveDmAccounts,
+  DAILY_UPLOAD_LIMIT,
   upsertVideo,
   updateVideoUpload,
   updateVideoHold,
@@ -28,14 +30,19 @@ export interface UploadRunOptions {
 }
 
 export async function runUploads(options: UploadRunOptions = {}) {
-  const maxUploads = options.maxUploads ?? 8;
+  const activeAccounts = await getActiveDmAccounts();
+  const totalSwarmSlots = activeAccounts.reduce(
+    (sum, a) => sum + Math.max(0, DAILY_UPLOAD_LIMIT - (a.daily_upload_count || 0)),
+    0
+  );
+  const maxUploads = options.maxUploads ?? Math.max(1, totalSwarmSlots);
   const maxExecutionSeconds = options.maxExecutionSeconds ?? 240; // Guard for Vercel 300s timeout
   const startTime = Date.now();
 
   const client = new FourKHdHubClient();
   const swarm = new DmSwarm();
 
-  console.log(`\n🚀 Starting Intelligent Upload Pipeline (Limit ${maxUploads} uploads)...`);
+  console.log(`\n🚀 Starting Intelligent Upload Pipeline (Dynamic limit: ${maxUploads} uploads across ${activeAccounts.length} active nodes)...`);
 
   let uploadsAttempted = 0;
   let itemsPutOnHold = 0;
@@ -308,7 +315,12 @@ async function attemptUpload(
         return 'uploaded';
       } else {
         console.log(`      Upload failed: ${result.error}`);
-        if (result.error?.includes('Capacity hold') || result.error?.includes('requires ~')) {
+        if (
+          result.error?.includes('Capacity hold') || 
+          result.error?.includes('requires ~') ||
+          result.error?.includes('rate limit') ||
+          result.error?.includes('All DM accounts failed')
+        ) {
           await updateVideoHold(dbVideo.id, result.error);
           return 'on_hold';
         }
@@ -318,9 +330,9 @@ async function attemptUpload(
     }
   }
 
-  // If all fallbacks failed
-  await updateVideoError(dbVideo.id, 'All fallback releases failed to upload');
-  return 'failed';
+  // If all fallbacks failed or were throttled, defer on hold for next cycle
+  await updateVideoHold(dbVideo.id, 'Deferred on hold for next available swarm slot or alternative release');
+  return 'on_hold';
 }
 
 function sleep(ms: number): Promise<void> {

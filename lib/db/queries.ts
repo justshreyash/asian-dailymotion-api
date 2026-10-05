@@ -642,7 +642,7 @@ export async function resetHoldVideos(): Promise<number> {
       upload_status = 'pending',
       error_message = NULL,
       updated_at = datetime('now')
-    WHERE upload_status = 'on_hold'
+    WHERE upload_status IN ('on_hold', 'failed')
   `);
   return result.changes || 0;
 }
@@ -654,7 +654,7 @@ export async function getHoldVideos(limit = 50): Promise<VideoRow[]> {
 export async function updateVideoError(id: number, error: string): Promise<void> {
   await dbRun(`
     UPDATE videos SET
-      upload_status = 'failed',
+      upload_status = 'on_hold',
       error_message = ?,
       updated_at = datetime('now')
     WHERE id = ?
@@ -703,7 +703,7 @@ export const DAILY_UPLOAD_LIMIT = 14; // Standard Dailymotion limit is 15 videos
 export const DAILY_DURATION_LIMIT_SECONDS = 34200; // 9.5 hours safe buffer (Standard Dailymotion limit is 10 hours/day)
 export const MAX_ALLOWED_STRIKES = 2; // Auto-quarantine at 2 strikes to prevent account termination
 
-async function performDailyResetIfNeeded(): Promise<void> {
+export async function performDailyResetIfNeeded(): Promise<void> {
   const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
   const resetRes = await dbRun(`
     UPDATE dm_accounts
@@ -711,9 +711,16 @@ async function performDailyResetIfNeeded(): Promise<void> {
     WHERE daily_reset_at IS NULL OR daily_reset_at < ?
   `, [today, today]);
 
-  // If any account underwent daily reset, release all on_hold videos for upload
+  // When accounts reset for the new day, unblock all hold/failed videos and processing titles
   if (resetRes.changes > 0) {
-    await resetHoldVideos();
+    const releasedCount = await resetHoldVideos();
+    // Also ensure all uncompleted catalog titles are ready for automated ingestion
+    await dbRun(`
+      UPDATE titles 
+      SET status = 'processing', updated_at = datetime('now')
+      WHERE status NOT IN ('completed', 'blacklisted')
+    `);
+    console.log(`🌅 Daily quota reset executed for ${resetRes.changes} swarm accounts. ${releasedCount} hold/failed queue videos released to pending.`);
   }
 }
 
