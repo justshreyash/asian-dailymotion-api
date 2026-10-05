@@ -1,0 +1,33 @@
+name: Swarm Pipeline Automated Scheduler
+
+on:
+  schedule:
+    # Runs every 4 hours automatically for free via GitHub Actions (00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC)
+    - cron: '0 */4 * * *'
+  workflow_dispatch: # Allows manual trigger directly from the GitHub Actions tab
+
+jobs:
+  run-pipeline:
+    name: Trigger Swarm Ingestion & Uploads
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Execution Request to Vercel Pipeline
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$APP_URL" ]; then
+            echo "ℹ️ APP_URL secret is not configured in GitHub repository secrets yet."
+            echo "Add APP_URL (e.g. https://your-app.vercel.app) in GitHub Repo Settings -> Secrets to enable automatic external cron triggers."
+            exit 0
+          fi
+          
+          # Clean URL trailing slashes
+          BASE_URL="${APP_URL%/}"
+          
+          echo "🚀 Invoking pipeline at $BASE_URL/api/cron/process..."
+          
+          curl -s -S -X GET "$BASE_URL/api/cron/process?key=$CRON_SECRET" \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            --max-time 300 \
+            -w "\nHTTP Status: %{http_code}\nTotal Time: %{time_total}s\n"
