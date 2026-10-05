@@ -4,39 +4,37 @@
  * Run: npx tsx scripts/test-upload.ts
  */
 
+import 'dotenv/config';
 import { FourKHdHubClient } from '../lib/scraper/client';
 import { DmSwarm } from '../lib/dailymotion/swarm';
 import { addDmAccount, getActiveDmAccounts } from '../lib/db/queries';
 import { initSchema } from '../lib/db/schema';
 import { closeDb } from '../lib/db/client';
-import * as dotenv from 'dotenv';
-
-dotenv.config({ path: '.env.local' });
 
 async function main() {
   console.log('🎬 Dailymotion Upload Test\n');
 
-  initSchema();
+  await initSchema();
 
   // 1. Ensure we have a DM account
-  let accounts = getActiveDmAccounts();
+  let accounts = await getActiveDmAccounts();
   if (accounts.length === 0) {
     console.log('No active DM accounts found in DB. Checking env...');
     const apiKey = process.env.DAILYMOTION_API_KEY;
     const apiSecret = process.env.DAILYMOTION_API_SECRET;
 
     if (!apiKey || !apiSecret) {
-      console.log('❌ DM credentials missing in .env.local');
+      console.log('❌ DM credentials missing in environment (.env)');
       console.log('Need: DAILYMOTION_API_KEY, DAILYMOTION_API_SECRET');
       process.exit(1);
     }
 
-    addDmAccount({
+    await addDmAccount({
       label: 'test-account-1',
       apiKey,
       apiSecret,
     });
-    accounts = getActiveDmAccounts();
+    accounts = await getActiveDmAccounts();
     console.log(`✅ Added test account "${accounts[0].label}" to DB`);
   } else {
     console.log(`✅ Found ${accounts.length} active DM accounts in DB`);
@@ -46,7 +44,6 @@ async function main() {
   console.log('\n🔍 Resolving HubCloud direct URL for "Ballerina"...');
   const client = new FourKHdHubClient();
 
-  // We know from previous test that Ballerina has this URL:
   const testUrl = 'https://hubdrive.wtf/drive/tLdI0NixH57sUe5B6a9ZfQ281u01M6bL2NfLhRjR/135905/';
 
   console.log(`   Input URL: ${testUrl}`);
@@ -73,10 +70,10 @@ async function main() {
   console.log('\n🚀 Uploading to Dailymotion via Swarm...');
   const swarm = new DmSwarm();
 
-  const dmTitle = 'm-1126166'; // Ballerina TMDB ID
+  const dmTitle = '1126166'; // Ballerina TMDB ID
   console.log(`   Title: ${dmTitle}`);
 
-  const result = await swarm.upload(directUrl, dmTitle);
+  const result = await swarm.upload(directUrl, dmTitle, { estimatedDurationSeconds: 5400, sizeMb: 770 });
 
   if (result.success) {
     console.log('\n🎉 Upload Successful!');

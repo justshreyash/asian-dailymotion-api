@@ -1,7 +1,7 @@
 /**
  * Upload Pipeline Runner:
  * Iterates through all catalog titles with TMDB IDs, finds missing episodes/movies,
- * and uploads them using the active account swarm with strict quota & duration safeguards.
+ * and uploads them using the active account swarm with greedy bin-packing safeguards.
  *
  * Usage:
  *   npx tsx scripts/run-uploads.ts
@@ -14,7 +14,7 @@ import { closeDb } from '../lib/db/client';
 
 async function main() {
   console.log('🚀 Starting Swarm Upload Pipeline...');
-  initSchema();
+  await initSchema();
 
   const maxArg = process.argv.find(a => a.startsWith('--max='));
   const tmdbArg = process.argv.find(a => a.startsWith('--tmdb='));

@@ -16,11 +16,12 @@ import { closeDb } from '../lib/db/client';
 async function main() {
   const args = process.argv.slice(2);
 
+  await initSchema();
+
   if (args.length < 3) {
     console.log('Usage: npx tsx scripts/add-account.ts <label> <apiKey> <apiSecret>');
     console.log('\nCurrent registered accounts:');
-    initSchema();
-    const accounts = getAllDmAccounts();
+    const accounts = await getAllDmAccounts();
     console.table(accounts.map(a => ({
       id: a.id,
       label: a.label,
@@ -35,12 +36,11 @@ async function main() {
 
   const [label, apiKey, apiSecret] = args;
 
-  initSchema();
-  const account = addDmAccount({ label, apiKey, apiSecret });
-  console.log(`✅ Successfully added account "${account.label}" (ID: ${account.id}) to Dailymotion Swarm!`);
+  const account = await addDmAccount({ label, apiKey, apiSecret });
+  console.log(`✅ Successfully added account "${account?.label}" (ID: ${account?.id}) to Dailymotion Swarm!`);
 
   console.log('\nAll accounts in swarm:');
-  const accounts = getAllDmAccounts();
+  const accounts = await getAllDmAccounts();
   console.table(accounts.map(a => ({
     id: a.id,
     label: a.label,

@@ -2,19 +2,20 @@
  * Phase 1 & 2 Execution Script:
  * 1. Crawls 4KHDHub Korean drama, series, and movie categories
  * 2. Filters by audio languages (Korean, Hindi, English)
- * 3. Saves discovered titles to SQLite
+ * 3. Saves discovered titles to database
  * 4. Resolves TMDB IDs and episode/season counts
  */
 
 import 'dotenv/config';
 import { initSchema } from '../lib/db/schema';
-import { getDb, closeDb } from '../lib/db/client';
+import { closeDb } from '../lib/db/client';
+import { getAllTitles } from '../lib/db/queries';
 import { runDiscovery } from '../lib/pipeline/discover';
-import { runTmdbResolution } from '../lib/pipeline/resolve-tmdb';
+import { runTmdbResolution, syncAiringSeriesDetails } from '../lib/pipeline/resolve-tmdb';
 
 async function main() {
   console.log('🚀 Starting Catalog Discovery & TMDB Resolution');
-  initSchema();
+  await initSchema();
 
   // Pages to scrape per category (default: 3 pages ~ 54 titles per category)
   const maxPages = parseInt(process.env.DISCOVERY_PAGES || '3', 10);
@@ -29,19 +30,17 @@ async function main() {
   console.log('PHASE 2: TMDB ID & Metadata Resolution');
   console.log('=======================================');
   await runTmdbResolution();
+  await syncAiringSeriesDetails();
 
   // Print summary from DB
-  const db = getDb();
-  const summary = db.prepare(`
-    SELECT kind, COUNT(*) as total, 
-           SUM(CASE WHEN tmdb_id IS NOT NULL THEN 1 ELSE 0 END) as matched,
-           SUM(CASE WHEN status = 'ready' THEN 1 ELSE 0 END) as ready
-    FROM titles
-    GROUP BY kind
-  `).all() as any[];
+  const allTitles = await getAllTitles();
+  const series = allTitles.filter(t => t.kind === 'series');
+  const movies = allTitles.filter(t => t.kind === 'movie');
 
   console.log('\n📊 Catalog Summary:');
-  console.table(summary);
+  console.log(`   - Series: ${series.length} (${series.filter(s => s.tmdb_id).length} matched TMDB)`);
+  console.log(`   - Movies: ${movies.length} (${movies.filter(m => m.tmdb_id).length} matched TMDB)`);
+  console.log(`   - Total:  ${allTitles.length}`);
 
   closeDb();
 }
