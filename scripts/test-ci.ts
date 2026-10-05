@@ -32,25 +32,31 @@ const movieTitle = formatDmTitle(1054867, true);
 assert(movieTitle === '1054867', `Movie title format expected "1054867", got "${movieTitle}"`);
 
 const parsedSeries = parseDmTitle('314939-1-5');
-assert(parsedSeries.tmdbId === 314939 && parsedSeries.season === 1 && parsedSeries.episode === 5, 'Parse series DM title');
+assert(
+  Boolean(parsedSeries && parsedSeries.tmdbId === 314939 && parsedSeries.season === 1 && parsedSeries.episode === 5),
+  'Parse series DM title'
+);
 
 const parsedMovie = parseDmTitle('m-1054867');
-assert(parsedMovie.tmdbId === 1054867 && parsedMovie.isMovie === true, 'Parse movie DM title');
+assert(
+  Boolean(parsedMovie && parsedMovie.tmdbId === 1054867 && parsedMovie.isMovie === true),
+  'Parse movie DM title'
+);
 
 // 2. Test Release Picker Strategy (1080p -> Smallest first -> Filter >3.8GB)
 console.log('\n2. Testing Release Picker Strategy:');
 const mockReleases: StreamRelease[] = [
-  { releaseTitle: 'Rel 4K Heavy', directUrl: 'http://a', resolution: '2160p', sizeMb: 5000 },
-  { releaseTitle: 'Rel 1080p Large', directUrl: 'http://b', resolution: '1080p', sizeMb: 2400 },
-  { releaseTitle: 'Rel 1080p Optimal', directUrl: 'http://c', resolution: '1080p', sizeMb: 1200 },
-  { releaseTitle: 'Rel 720p Small', directUrl: 'http://d', resolution: '720p', sizeMb: 600 },
+  { id: '1', releaseTitle: 'Rel 4K Heavy', mirrors: ['http://a'], resolution: '2160p', sizeMb: 5000, source: 'Hub', mediaTags: [], audioLanguages: [] },
+  { id: '2', releaseTitle: 'Rel 1080p Large', mirrors: ['http://b'], resolution: '1080p', sizeMb: 2400, source: 'Hub', mediaTags: [], audioLanguages: [] },
+  { id: '3', releaseTitle: 'Rel 1080p Optimal', mirrors: ['http://c'], resolution: '1080p', sizeMb: 1200, source: 'Hub', mediaTags: [], audioLanguages: [] },
+  { id: '4', releaseTitle: 'Rel 720p Small', mirrors: ['http://d'], resolution: '720p', sizeMb: 600, source: 'Hub', mediaTags: [], audioLanguages: [] },
 ];
 
 const best = selectBestReleases(mockReleases);
 assert(best.length === 3, `Expected 3 valid releases (filtered 5GB), got ${best.length}`);
-assert(best[0].releaseTitle === 'Rel 1080p Optimal', 'Prioritizes 1080p smallest size first');
-assert(best[1].releaseTitle === 'Rel 1080p Large', 'Follows with 1080p larger fallback');
-assert(best[2].releaseTitle === 'Rel 720p Small', 'Follows with 720p fallback');
+assert(Boolean(best[0] && best[0].releaseTitle === 'Rel 1080p Optimal'), 'Prioritizes 1080p smallest size first');
+assert(Boolean(best[1] && best[1].releaseTitle === 'Rel 1080p Large'), 'Follows with 1080p larger fallback');
+assert(Boolean(best[2] && best[2].releaseTitle === 'Rel 720p Small'), 'Follows with 720p fallback');
 
 // 3. Test Auth Security
 console.log('\n3. Testing Auth Security:');
@@ -72,3 +78,5 @@ if (failed > 0) {
 } else {
   process.exit(0);
 }
+
+export {};

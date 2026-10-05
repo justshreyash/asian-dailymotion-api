@@ -25,7 +25,7 @@ async function main() {
   console.log('='.repeat(60));
 
   // 1. Init DB
-  initSchema();
+  await initSchema();
 
   const client = new FourKHdHubClient();
 
@@ -155,7 +155,7 @@ async function main() {
   console.log(`   Qualifying (Korean + Hindi/English): ${qualifyCount}`);
 
   // Show DB contents
-  const dbTitles = getAllTitles();
+  const dbTitles = await getAllTitles();
   console.log(`\n💾 Database titles (${dbTitles.length}):`);
   for (const t of dbTitles) {
     console.log(`   ${t.id}. ${t.title} (${t.kind}) - ${t.status} - audio: ${t.audio_langs}`);
