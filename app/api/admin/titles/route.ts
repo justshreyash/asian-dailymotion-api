@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAllTitles } from '@/lib/db/queries';
+import { getPaginatedTitles } from '@/lib/db/queries';
 import { verifyAdminRequest } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
@@ -14,10 +14,13 @@ export async function GET(request: NextRequest) {
     const q = searchParams.get('q') || '';
     const status = searchParams.get('status') || '';
     const kind = searchParams.get('kind') || '';
+    const page = parseInt(searchParams.get('page') || '1', 10);
+    const limit = parseInt(searchParams.get('limit') || '25', 10);
 
-    const titles = await getAllTitles({ q, status, kind, limit: 250 });
-    return NextResponse.json({ titles });
+    const result = await getPaginatedTitles({ q, status, kind, page, limit });
+    return NextResponse.json(result);
   } catch (err) {
     return NextResponse.json({ error: (err as Error).message }, { status: 500 });
   }
 }
+

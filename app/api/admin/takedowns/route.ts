@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
-  getTakedownVideos,
+  getPaginatedTakedowns,
   getAllDmAccounts,
   getStats,
   requeueTakedownVideo,
@@ -23,8 +23,12 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const [takedowns, rawAccounts, stats] = await Promise.all([
-      getTakedownVideos(150),
+    const { searchParams } = new URL(request.url);
+    const page = parseInt(searchParams.get('page') || '1', 10);
+    const limit = parseInt(searchParams.get('limit') || '25', 10);
+
+    const [takedownsRes, rawAccounts, stats] = await Promise.all([
+      getPaginatedTakedowns({ page, limit }),
       getAllDmAccounts(),
       getStats(),
     ]);
@@ -36,7 +40,11 @@ export async function GET(request: NextRequest) {
     }));
 
     return NextResponse.json({
-      takedowns,
+      takedowns: takedownsRes.takedowns,
+      total: takedownsRes.total,
+      page: takedownsRes.page,
+      limit: takedownsRes.limit,
+      totalPages: takedownsRes.totalPages,
       accounts,
       stats,
     });

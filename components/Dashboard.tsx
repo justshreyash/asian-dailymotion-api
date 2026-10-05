@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   BarChart3,
   HardDrive,
@@ -23,15 +23,21 @@ import {
   AlertCircle,
   ShieldAlert,
   Shield,
-  HeartPulse,
   RotateCcw,
   CheckCircle2,
   AlertTriangle,
-  Radio,
   Zap,
   Ban,
   Clock,
   Play,
+  ExternalLink,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
+  Code2,
+  Layers,
+  SlidersHorizontal,
 } from 'lucide-react';
 import {
   AreaChart,
@@ -106,38 +112,92 @@ interface VideoFile {
   created_at: string;
 }
 
+interface StatsData {
+  totalTitles: number;
+  tmdbMatchedTitles: number;
+  totalVideos: number;
+  uploadedVideos: number;
+  pendingVideos: number;
+  takedownVideos: number;
+  failedVideos: number;
+  holdVideos: number;
+  totalStorageMb: number;
+  activeAccounts: number;
+  quarantinedAccounts: number;
+}
+
 const DAILY_UPLOAD_LIMIT = 14;
 const DAILY_DURATION_LIMIT_SECONDS = 34200; // 9.5 hours (Standard Creator 10h/day limit)
 
 export default function Dashboard() {
   const [hasMounted, setHasMounted] = useState(false);
   
-  // Auth state — default to false for instant login rendering
+  // Auth state
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   const [adminSecretInput, setAdminSecretInput] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [authLoading, setAuthLoading] = useState(false);
 
-  // Dashboard Data State
-  const [activeTab, setActiveTab] = useState<'overview' | 'nodes' | 'catalog' | 'files' | 'takedowns' | 'pipeline'>('overview');
+  // Active Tab
+  const [activeTab, setActiveTab] = useState<'overview' | 'nodes' | 'catalog' | 'available' | 'takedowns' | 'pipeline'>('overview');
+  
+  // Global Stats & Accounts (Lightweight Polling)
+  const [stats, setStats] = useState<StatsData>({
+    totalTitles: 0,
+    tmdbMatchedTitles: 0,
+    totalVideos: 0,
+    uploadedVideos: 0,
+    pendingVideos: 0,
+    takedownVideos: 0,
+    failedVideos: 0,
+    holdVideos: 0,
+    totalStorageMb: 0,
+    activeAccounts: 0,
+    quarantinedAccounts: 0,
+  });
   const [accounts, setAccounts] = useState<Account[]>([]);
-  const [titles, setTitles] = useState<Title[]>([]);
-  const [videos, setVideos] = useState<VideoFile[]>([]);
-  const [takedowns, setTakedowns] = useState<VideoFile[]>([]);
   const [loading, setLoading] = useState(false);
+
+  // 1. Catalog State with Server-Side Pagination
+  const [titles, setTitles] = useState<Title[]>([]);
+  const [catalogPage, setCatalogPage] = useState(1);
+  const [catalogLimit, setCatalogLimit] = useState(25);
+  const [catalogTotal, setCatalogTotal] = useState(0);
+  const [catalogTotalPages, setCatalogTotalPages] = useState(1);
+  const [catalogSearch, setCatalogSearch] = useState('');
+  const [catalogKind, setCatalogKind] = useState<'all' | 'series' | 'movie'>('all');
+  const [catalogStatus, setCatalogStatus] = useState<string>('all');
+  const [catalogLoading, setCatalogLoading] = useState(false);
+
+  // 2. Available / Hosted Videos State with Server-Side Pagination
+  const [videos, setVideos] = useState<VideoFile[]>([]);
+  const [videoPage, setVideoPage] = useState(1);
+  const [videoLimit, setVideoLimit] = useState(25);
+  const [videoTotal, setVideoTotal] = useState(0);
+  const [videoTotalPages, setVideoTotalPages] = useState(1);
+  const [videoSearch, setVideoSearch] = useState('');
+  const [videoKind, setVideoKind] = useState<'all' | 'series' | 'movie'>('all');
+  const [videoStatusFilter, setVideoStatusFilter] = useState<string>('uploaded');
+  const [videosLoading, setVideosLoading] = useState(false);
+
+  // 3. Takedowns State with Server-Side Pagination
+  const [takedowns, setTakedowns] = useState<VideoFile[]>([]);
+  const [takedownPage, setTakedownPage] = useState(1);
+  const [takedownLimit, setTakedownLimit] = useState(25);
+  const [takedownTotal, setTakedownTotal] = useState(0);
+  const [takedownTotalPages, setTakedownTotalPages] = useState(1);
+  const [takedownsLoading, setTakedownsLoading] = useState(false);
 
   // Takedowns & Health Scan State
   const [healthScanLoading, setHealthScanLoading] = useState(false);
   const [healthScanSummary, setHealthScanSummary] = useState<any>(null);
 
-  // Search & Filter
-  const [searchQuery, setSearchQuery] = useState('');
-  const [kindFilter, setKindFilter] = useState<'all' | 'series' | 'movie'>('all');
+  // Copy Feedback & Timeframe
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [timeframe, setTimeframe] = useState<'7d' | '30d'>('7d');
 
-  // Modal
+  // Modal & Actions State
   const [previewVideo, setPreviewVideo] = useState<VideoFile | null>(null);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [newLabel, setNewLabel] = useState('');
@@ -154,6 +214,127 @@ export default function Dashboard() {
     }, 4500);
   };
 
+  // ─────────────────────────────────────────────────────────────
+  // OPTIMIZED DATA FETCHERS
+  // ─────────────────────────────────────────────────────────────
+
+  // 1. Lightweight Stats & Accounts Polling (<5ms execution)
+  const fetchStats = useCallback(async () => {
+    try {
+      const res = await fetch('/api/admin/stats', { credentials: 'include' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.stats) setStats(data.stats);
+        if (data.accounts) setAccounts(data.accounts);
+      }
+    } catch (err) {
+      console.error('Fetch stats failed:', err);
+    }
+  }, []);
+
+  // 2. Fetch Paginated Titles (Catalog Index)
+  const fetchCatalog = useCallback(async (
+    page = catalogPage,
+    limit = catalogLimit,
+    q = catalogSearch,
+    kind = catalogKind,
+    status = catalogStatus
+  ) => {
+    try {
+      setCatalogLoading(true);
+      const params = new URLSearchParams({
+        page: String(page),
+        limit: String(limit),
+        q,
+        kind: kind === 'all' ? '' : kind,
+        status: status === 'all' ? '' : status,
+      });
+      const res = await fetch(`/api/admin/titles?${params.toString()}`, { credentials: 'include' });
+      if (res.ok) {
+        const data = await res.json();
+        setTitles(data.titles || []);
+        setCatalogTotal(data.total || 0);
+        setCatalogTotalPages(data.totalPages || 1);
+        setCatalogPage(data.page || 1);
+      }
+    } catch (err) {
+      console.error('Fetch catalog failed:', err);
+    } finally {
+      setCatalogLoading(false);
+    }
+  }, [catalogPage, catalogLimit, catalogSearch, catalogKind, catalogStatus]);
+
+  // 3. Fetch Paginated Available Videos
+  const fetchVideos = useCallback(async (
+    page = videoPage,
+    limit = videoLimit,
+    q = videoSearch,
+    kind = videoKind,
+    status = videoStatusFilter
+  ) => {
+    try {
+      setVideosLoading(true);
+      const params = new URLSearchParams({
+        page: String(page),
+        limit: String(limit),
+        q,
+        kind: kind === 'all' ? '' : kind,
+      });
+
+      if (status === 'uploaded') {
+        params.set('onlyUploaded', 'true');
+      } else if (status !== 'all') {
+        params.set('status', status);
+      }
+
+      const res = await fetch(`/api/admin/videos?${params.toString()}`, { credentials: 'include' });
+      if (res.ok) {
+        const data = await res.json();
+        setVideos(data.videos || []);
+        setVideoTotal(data.total || 0);
+        setVideoTotalPages(data.totalPages || 1);
+        setVideoPage(data.page || 1);
+      }
+    } catch (err) {
+      console.error('Fetch videos failed:', err);
+    } finally {
+      setVideosLoading(false);
+    }
+  }, [videoPage, videoLimit, videoSearch, videoKind, videoStatusFilter]);
+
+  // 4. Fetch Paginated Takedowns
+  const fetchTakedowns = useCallback(async (page = takedownPage, limit = takedownLimit) => {
+    try {
+      setTakedownsLoading(true);
+      const params = new URLSearchParams({
+        page: String(page),
+        limit: String(limit),
+      });
+      const res = await fetch(`/api/admin/takedowns?${params.toString()}`, { credentials: 'include' });
+      if (res.ok) {
+        const data = await res.json();
+        setTakedowns(data.takedowns || []);
+        setTakedownTotal(data.total || 0);
+        setTakedownTotalPages(data.totalPages || 1);
+        setTakedownPage(data.page || 1);
+        if (data.stats) setStats(data.stats);
+        if (data.accounts) setAccounts(data.accounts);
+      }
+    } catch (err) {
+      console.error('Fetch takedowns failed:', err);
+    } finally {
+      setTakedownsLoading(false);
+    }
+  }, [takedownPage, takedownLimit]);
+
+  // 5. Consolidated Tab Refresh Dispatcher
+  const refreshActiveTabData = useCallback(() => {
+    fetchStats();
+    if (activeTab === 'catalog') fetchCatalog();
+    else if (activeTab === 'available') fetchVideos();
+    else if (activeTab === 'takedowns') fetchTakedowns();
+  }, [activeTab, fetchStats, fetchCatalog, fetchVideos, fetchTakedowns]);
+
   // Check auth silently on mount
   useEffect(() => {
     setHasMounted(true);
@@ -162,20 +343,38 @@ export default function Dashboard() {
       .then(data => {
         if (data.authenticated) {
           setIsAuthenticated(true);
-          fetchData();
+          fetchStats();
         }
       })
       .catch(() => {});
-  }, []);
+  }, [fetchStats]);
 
-  // Periodic polling every 15s to update live metrics automatically when cron runs
+  // Trigger specific data fetch when switching tabs
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    if (activeTab === 'catalog') {
+      fetchCatalog(1);
+    } else if (activeTab === 'available') {
+      fetchVideos(1);
+    } else if (activeTab === 'takedowns') {
+      fetchTakedowns(1);
+    } else if (activeTab === 'overview' || activeTab === 'nodes') {
+      fetchStats();
+    }
+  }, [activeTab, isAuthenticated]);
+
+  // Periodic polling every 15s (ONLY lightweight stats — zero table scans)
   useEffect(() => {
     if (!isAuthenticated) return;
     const timer = setInterval(() => {
-      fetchData();
+      fetchStats();
     }, 15000);
     return () => clearInterval(timer);
-  }, [isAuthenticated]);
+  }, [isAuthenticated, fetchStats]);
+
+  // ─────────────────────────────────────────────────────────────
+  // AUTH HANDLERS
+  // ─────────────────────────────────────────────────────────────
 
   const handleLogin = async (e?: React.FormEvent | React.MouseEvent | React.KeyboardEvent) => {
     if (e) {
@@ -200,7 +399,7 @@ export default function Dashboard() {
         setIsAuthenticated(true);
         setAdminSecretInput('');
         setAuthError(null);
-        fetchData();
+        fetchStats();
       } else {
         setAuthError(data.error || 'Invalid admin secret key.');
       }
@@ -224,26 +423,9 @@ export default function Dashboard() {
     }
   };
 
-  const fetchData = async () => {
-    try {
-      setLoading(true);
-      const [accRes, titlesRes, vidsRes, takeRes] = await Promise.all([
-        fetch('/api/admin/accounts', { credentials: 'include' }).then(r => r.json()),
-        fetch('/api/admin/titles', { credentials: 'include' }).then(r => r.json()),
-        fetch('/api/admin/videos', { credentials: 'include' }).then(r => r.json()),
-        fetch('/api/admin/takedowns', { credentials: 'include' }).then(r => r.json()).catch(() => ({ takedowns: [] })),
-      ]);
-
-      if (accRes.accounts) setAccounts(accRes.accounts);
-      if (titlesRes.titles) setTitles(titlesRes.titles);
-      if (vidsRes.videos) setVideos(vidsRes.videos);
-      if (takeRes.takedowns) setTakedowns(takeRes.takedowns);
-    } catch (err) {
-      console.error('Fetch dashboard data failed:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
+  // ─────────────────────────────────────────────────────────────
+  // TAKEDOWN & HEALTH ACTIONS
+  // ─────────────────────────────────────────────────────────────
 
   const handleRunHealthAudit = async () => {
     try {
@@ -259,7 +441,7 @@ export default function Dashboard() {
       if (data.summary) {
         setHealthScanSummary(data.summary);
       }
-      fetchData();
+      refreshActiveTabData();
     } catch (err) {
       console.error('Health scan failed:', err);
     } finally {
@@ -277,7 +459,8 @@ export default function Dashboard() {
       });
       const data = await res.json();
       if (data.success) {
-        fetchData();
+        triggerToast('Video requeued for clean alternative encode upload.', 'success');
+        refreshActiveTabData();
       }
     } catch (err) {
       console.error('Requeue failed:', err);
@@ -294,7 +477,8 @@ export default function Dashboard() {
       });
       const data = await res.json();
       if (data.success) {
-        fetchData();
+        triggerToast('Takedown entry archived.', 'info');
+        refreshActiveTabData();
       }
     } catch (err) {
       console.error('Dismiss failed:', err);
@@ -311,7 +495,8 @@ export default function Dashboard() {
       });
       const data = await res.json();
       if (data.success) {
-        fetchData();
+        triggerToast('Account strikes reset to 0 & node reactivated.', 'success');
+        refreshActiveTabData();
       }
     } catch (err) {
       console.error('Reset strikes failed:', err);
@@ -328,7 +513,8 @@ export default function Dashboard() {
       });
       const data = await res.json();
       if (data.success) {
-        fetchData();
+        triggerToast('Account quarantined to safeguard channel.', 'info');
+        refreshActiveTabData();
       }
     } catch (err) {
       console.error('Quarantine failed:', err);
@@ -345,7 +531,8 @@ export default function Dashboard() {
       });
       const data = await res.json();
       if (data.success) {
-        fetchData();
+        triggerToast('Account reactivated for upload pipeline.', 'success');
+        refreshActiveTabData();
       }
     } catch (err) {
       console.error('Reactivate failed:', err);
@@ -362,7 +549,8 @@ export default function Dashboard() {
       });
       const data = await res.json();
       if (data.success) {
-        fetchData();
+        triggerToast('Title blacklisted: all future episode uploads halted.', 'error');
+        refreshActiveTabData();
       }
     } catch (err) {
       console.error('Blacklist title failed:', err);
@@ -379,7 +567,8 @@ export default function Dashboard() {
       });
       const data = await res.json();
       if (data.success) {
-        fetchData();
+        triggerToast('Title unblocked & restored to discovered.', 'success');
+        refreshActiveTabData();
       }
     } catch (err) {
       console.error('Unblacklist title failed:', err);
@@ -396,18 +585,21 @@ export default function Dashboard() {
       });
       const data = await res.json();
       if (data.success) {
-        fetchData();
+        triggerToast(`${data.count || 'All'} takedowns requeued for alternative encodes.`, 'success');
+        refreshActiveTabData();
       }
     } catch (err) {
       console.error('Requeue all failed:', err);
     }
   };
 
-  const handleCopy = (text: string, id: string) => {
+  // Copy helper with feedback
+  const handleCopy = (text: string, id: string, label = 'Copied to clipboard!') => {
     if (typeof navigator !== 'undefined' && navigator.clipboard) {
       navigator.clipboard.writeText(text);
       setCopiedId(id);
-      setTimeout(() => setCopiedId(null), 2000);
+      triggerToast(label, 'success');
+      setTimeout(() => setCopiedId(null), 2500);
     }
   };
 
@@ -429,12 +621,13 @@ export default function Dashboard() {
         setNewApiKey('');
         setNewApiSecret('');
         setIsAddModalOpen(false);
-        fetchData();
+        triggerToast(`Swarm node "${newLabel}" added.`, 'success');
+        refreshActiveTabData();
       } else {
-        alert(data.error || 'Failed to add account');
+        triggerToast(data.error || 'Failed to add account', 'error');
       }
     } catch (err) {
-      alert((err as Error).message);
+      triggerToast((err as Error).message, 'error');
     } finally {
       setSubmitting(false);
     }
@@ -452,20 +645,27 @@ export default function Dashboard() {
       const data = await res.json();
       if (data.success) {
         triggerToast(`Node #${id} switched to ${nextActive ? 'ACTIVE' : 'PAUSED'}`, 'success');
+        refreshActiveTabData();
       }
-      fetchData();
     } catch (err) {
       triggerToast(`Failed to toggle drive: ${(err as Error).message}`, 'error');
-      console.error(err);
     }
   };
 
   const handleManualSync = async () => {
     try {
-      await fetchData();
+      setLoading(true);
+      await Promise.all([
+        fetchStats(),
+        activeTab === 'catalog' ? fetchCatalog() : null,
+        activeTab === 'available' ? fetchVideos() : null,
+        activeTab === 'takedowns' ? fetchTakedowns() : null,
+      ]);
       triggerToast('Synchronized with database: Swarm & Catalog up-to-date.', 'success');
     } catch (err) {
       triggerToast('Sync failed: ' + (err as Error).message, 'error');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -474,7 +674,7 @@ export default function Dashboard() {
     try {
       await fetch(`/api/admin/accounts?id=${id}`, { method: 'DELETE', credentials: 'include' });
       triggerToast(`Node "${label}" deleted.`, 'info');
-      fetchData();
+      refreshActiveTabData();
     } catch (err) {
       console.error(err);
     }
@@ -493,7 +693,7 @@ export default function Dashboard() {
       const data = await res.json();
       if (data.success) {
         triggerToast(data.message || 'Pipeline operation completed.', 'success');
-        fetchData();
+        refreshActiveTabData();
       } else {
         triggerToast(data.error || 'Pipeline operation failed.', 'error');
       }
@@ -505,13 +705,7 @@ export default function Dashboard() {
     }
   };
 
-  const totalTitles = titles.length;
-  const tmdbMatchedTitles = titles.filter(t => t.tmdb_id != null).length;
-  const totalUploadedVideos = videos.filter(v => v.upload_status === 'uploaded').length;
-  const activeAccountsCount = accounts.filter(a => a.is_active === 1).length;
-
-  const totalSizeMb = videos.reduce((acc, v) => acc + (v.file_size_mb || 1100), 0);
-  const totalGbs = (totalSizeMb / 1024).toFixed(1);
+  const totalGbs = (stats.totalStorageMb / 1024).toFixed(1);
 
   // Minimalist Activity Chart Data
   const chartData = useMemo(() => {
@@ -523,7 +717,7 @@ export default function Dashboard() {
         { date: 'Thu', gbs: 3.6, uploads: 3 },
         { date: 'Fri', gbs: 2.9, uploads: 2 },
         { date: 'Sat', gbs: 4.8, uploads: 4 },
-        { date: 'Today', gbs: parseFloat(totalGbs) || 6.8, uploads: totalUploadedVideos },
+        { date: 'Today', gbs: parseFloat(totalGbs) || 6.8, uploads: stats.uploadedVideos },
       ];
     } else {
       return [
@@ -533,25 +727,149 @@ export default function Dashboard() {
         { date: 'Week 4', gbs: 26.5, uploads: 22 },
       ];
     }
-  }, [timeframe, totalGbs, totalUploadedVideos]);
+  }, [timeframe, totalGbs, stats.uploadedVideos]);
 
-  const filteredTitles = titles.filter(t => {
-    const match = searchQuery === '' || 
-      t.title.toLowerCase().includes(searchQuery.toLowerCase()) || 
-      String(t.tmdb_id).includes(searchQuery) ||
-      t.slug.toLowerCase().includes(searchQuery.toLowerCase());
-    return match && (kindFilter === 'all' || t.kind === kindFilter);
-  });
+  // ─────────────────────────────────────────────────────────────
+  // REUSABLE PAGINATION COMPONENT
+  // ─────────────────────────────────────────────────────────────
+  const renderPagination = (
+    currentPage: number,
+    totalPages: number,
+    totalItems: number,
+    limit: number,
+    onPageChange: (newPage: number) => void,
+    onLimitChange: (newLimit: number) => void,
+    isLoading: boolean
+  ) => {
+    const startItem = totalItems === 0 ? 0 : (currentPage - 1) * limit + 1;
+    const endItem = Math.min(currentPage * limit, totalItems);
 
-  const filteredVideos = videos.filter(v => {
-    return searchQuery === '' ||
-      (v.title_name && v.title_name.toLowerCase().includes(searchQuery.toLowerCase())) ||
-      v.dm_title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      String(v.tmdb_id).includes(searchQuery) ||
-      (v.dm_video_id && v.dm_video_id.toLowerCase().includes(searchQuery.toLowerCase()));
-  });
+    return (
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        padding: '12px 16px',
+        background: '#0c101b',
+        borderTop: '1px solid #1a2234',
+        fontSize: '12px',
+        color: '#94a3b8',
+        flexWrap: 'wrap',
+        gap: '10px',
+      }}>
+        {/* Info & Rows per page */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+          <span>
+            Showing <strong style={{ color: '#f8fafc' }}>{startItem}</strong> - <strong style={{ color: '#f8fafc' }}>{endItem}</strong> of <strong style={{ color: '#f8fafc' }}>{totalItems}</strong> entries
+          </span>
 
-  // 1. Unauthenticated / Default Initial State: Instant Admin Login Gate
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span style={{ fontSize: '11px', color: '#64748b' }}>Per page:</span>
+            <select
+              value={limit}
+              onChange={e => onLimitChange(Number(e.target.value))}
+              disabled={isLoading}
+              style={{
+                background: '#131d31',
+                border: '1px solid #1a2234',
+                borderRadius: '4px',
+                color: '#f8fafc',
+                fontSize: '11px',
+                padding: '2px 6px',
+                outline: 'none',
+                cursor: 'pointer',
+              }}
+            >
+              {[15, 25, 50, 100].map(n => (
+                <option key={n} value={n}>{n}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {/* Page Nav Buttons */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <button
+            onClick={() => onPageChange(1)}
+            disabled={currentPage <= 1 || isLoading}
+            title="First Page"
+            style={{
+              background: '#131d31',
+              border: '1px solid #1a2234',
+              color: currentPage <= 1 ? '#475569' : '#94a3b8',
+              padding: '4px 8px',
+              borderRadius: '4px',
+              cursor: currentPage <= 1 ? 'not-allowed' : 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+            }}
+          >
+            <ChevronsLeft size={13} />
+          </button>
+
+          <button
+            onClick={() => onPageChange(currentPage - 1)}
+            disabled={currentPage <= 1 || isLoading}
+            title="Previous Page"
+            style={{
+              background: '#131d31',
+              border: '1px solid #1a2234',
+              color: currentPage <= 1 ? '#475569' : '#94a3b8',
+              padding: '4px 8px',
+              borderRadius: '4px',
+              cursor: currentPage <= 1 ? 'not-allowed' : 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+            }}
+          >
+            <ChevronLeft size={13} />
+          </button>
+
+          <span style={{ padding: '0 8px', fontWeight: '600', color: '#f8fafc', fontSize: '11px' }}>
+            Page {currentPage} of {totalPages || 1}
+          </span>
+
+          <button
+            onClick={() => onPageChange(currentPage + 1)}
+            disabled={currentPage >= totalPages || isLoading}
+            title="Next Page"
+            style={{
+              background: '#131d31',
+              border: '1px solid #1a2234',
+              color: currentPage >= totalPages ? '#475569' : '#94a3b8',
+              padding: '4px 8px',
+              borderRadius: '4px',
+              cursor: currentPage >= totalPages ? 'not-allowed' : 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+            }}
+          >
+            <ChevronRight size={13} />
+          </button>
+
+          <button
+            onClick={() => onPageChange(totalPages)}
+            disabled={currentPage >= totalPages || isLoading}
+            title="Last Page"
+            style={{
+              background: '#131d31',
+              border: '1px solid #1a2234',
+              color: currentPage >= totalPages ? '#475569' : '#94a3b8',
+              padding: '4px 8px',
+              borderRadius: '4px',
+              cursor: currentPage >= totalPages ? 'not-allowed' : 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+            }}
+          >
+            <ChevronsRight size={13} />
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  // 1. Unauthenticated State: Instant Admin Login Gate
   if (!isAuthenticated) {
     return (
       <div style={{
@@ -799,15 +1117,21 @@ export default function Dashboard() {
         <nav style={{ flex: 1, padding: '16px 10px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
           {[
             { id: 'overview', label: 'Overview', icon: BarChart3, badge: null, badgeColor: null },
-            { id: 'nodes', label: 'Swarm Drives', icon: HardDrive, badge: accounts.length, badgeColor: null },
-            { id: 'catalog', label: 'Catalog Index', icon: Film, badge: totalTitles, badgeColor: null },
-            { id: 'files', label: 'Hosted Videos', icon: Video, badge: totalUploadedVideos, badgeColor: null },
+            { id: 'nodes', label: 'Swarm Drives', icon: HardDrive, badge: accounts.length || stats.activeAccounts, badgeColor: null },
+            { id: 'catalog', label: 'Catalog Index', icon: Film, badge: stats.totalTitles, badgeColor: null },
+            { 
+              id: 'available', 
+              label: 'Available Videos', 
+              icon: Video, 
+              badge: stats.uploadedVideos, 
+              badgeColor: stats.uploadedVideos > 0 ? '#34d399' : null 
+            },
             { 
               id: 'takedowns', 
               label: 'Takedowns & Health', 
               icon: ShieldAlert, 
-              badge: takedowns.length > 0 ? takedowns.length : (accounts.some(a => (a.strike_count || 0) > 0) ? '!' : null),
-              badgeColor: takedowns.length > 0 ? '#ef4444' : '#f59e0b'
+              badge: stats.takedownVideos > 0 ? stats.takedownVideos : (stats.quarantinedAccounts > 0 ? '!' : null),
+              badgeColor: stats.takedownVideos > 0 ? '#ef4444' : '#f59e0b'
             },
             { id: 'pipeline', label: 'Pipeline Tasks', icon: Activity, badge: null, badgeColor: null },
           ].map(item => {
@@ -838,12 +1162,12 @@ export default function Dashboard() {
                   <Icon size={16} />
                   <span>{item.label}</span>
                 </div>
-                {item.badge !== null && (
+                {item.badge !== null && item.badge !== undefined && (
                   <span style={{
                     fontSize: '10px',
                     padding: '1px 6px',
                     borderRadius: '4px',
-                    background: item.badgeColor ? (item.badgeColor === '#ef4444' ? 'rgba(239,68,68,0.2)' : 'rgba(245,158,11,0.2)') : (isActive ? '#0284c7' : '#1a2234'),
+                    background: item.badgeColor ? (item.badgeColor === '#ef4444' ? 'rgba(239,68,68,0.2)' : item.badgeColor === '#34d399' ? 'rgba(16,185,129,0.2)' : 'rgba(245,158,11,0.2)') : (isActive ? '#0284c7' : '#1a2234'),
                     color: item.badgeColor || (isActive ? '#ffffff' : '#64748b'),
                     border: item.badgeColor ? `1px solid ${item.badgeColor}40` : 'none',
                     fontWeight: '700',
@@ -869,7 +1193,7 @@ export default function Dashboard() {
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
               <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#34d399' }} />
-              {activeAccountsCount} Drives Active
+              {stats.activeAccounts} Drives Active
             </span>
             <span style={{ color: '#38bdf8', fontWeight: '500' }}>Turso Cloud</span>
           </div>
@@ -916,7 +1240,7 @@ export default function Dashboard() {
           zIndex: 10,
         }}>
           <div style={{ fontWeight: '600', fontSize: '14px', color: '#f8fafc', textTransform: 'capitalize' }}>
-            {activeTab === 'nodes' ? 'Swarm Storage Drives' : activeTab === 'catalog' ? 'Discovered Catalog Index' : activeTab === 'files' ? 'Hosted Video Streams' : activeTab}
+            {activeTab === 'nodes' ? 'Swarm Storage Drives' : activeTab === 'catalog' ? 'Discovered Catalog Index' : activeTab === 'available' ? 'Available Video Streams (Direct & Data Endpoints)' : activeTab}
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -991,7 +1315,7 @@ export default function Dashboard() {
         <div style={{ flex: 1, padding: '24px 28px' }}>
 
           {/* ─────────────────────────────────────────────────────────
-              TAB 1: OVERVIEW (CLEAN & MINIMAL)
+              TAB 1: OVERVIEW
           ────────────────────────────────────────────────────────── */}
           {activeTab === 'overview' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
@@ -999,10 +1323,10 @@ export default function Dashboard() {
               {/* 4 Clean Metric Cards */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '14px' }}>
                 {[
-                  { label: 'Discovered Titles', value: totalTitles, sub: '4KHDHub Korean Catalog', icon: Film },
-                  { label: 'TMDB Matched', value: `${tmdbMatchedTitles} / ${totalTitles}`, sub: '100% ID Resolution', icon: Check },
-                  { label: 'Hosted Storage', value: `${totalGbs} GB`, sub: `${totalUploadedVideos} Streams Active`, icon: Video },
-                  { label: 'Swarm Drives', value: `${activeAccountsCount} / ${accounts.length}`, sub: '14 vids / 9.5h daily cap', icon: HardDrive },
+                  { label: 'Discovered Titles', value: stats.totalTitles, sub: '4KHDHub Korean Catalog', icon: Film },
+                  { label: 'TMDB Matched', value: `${stats.tmdbMatchedTitles} / ${stats.totalTitles}`, sub: '100% ID Resolution', icon: Check },
+                  { label: 'Hosted Storage', value: `${totalGbs} GB`, sub: `${stats.uploadedVideos} Streams Ready`, icon: Video },
+                  { label: 'Swarm Drives', value: `${stats.activeAccounts} / ${accounts.length || stats.activeAccounts}`, sub: '14 vids / 9.5h daily cap', icon: HardDrive },
                 ].map((item, i) => (
                   <div key={i} style={{
                     background: '#0c101b',
@@ -1147,103 +1471,57 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              {/* Recent Hosted Videos Table */}
+              {/* Available Videos Quick Preview */}
               <div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
                   <div style={{ fontSize: '13px', fontWeight: '600', color: '#f8fafc' }}>
-                    Recently Hosted Video Files
+                    Available Video Streams (Ready to Stream)
                   </div>
                   <button
-                    onClick={() => setActiveTab('files')}
-                    style={{ background: 'none', border: 'none', color: '#38bdf8', fontSize: '11px', cursor: 'pointer' }}
+                    onClick={() => setActiveTab('available')}
+                    style={{ background: 'none', border: 'none', color: '#38bdf8', fontSize: '11px', cursor: 'pointer', fontWeight: '600' }}
                   >
-                    View All →
+                    Open Available Videos Menu →
                   </button>
                 </div>
 
-                <div style={{ background: '#0c101b', border: '1px solid #1a2234', borderRadius: '8px', overflow: 'hidden' }}>
-                  {videos.filter(v => v.upload_status === 'uploaded').length === 0 ? (
-                    <div style={{ padding: '24px', textAlign: 'center', color: '#64748b', fontSize: '12px' }}>
-                      No hosted video streams uploaded yet. Click <strong>"Process Uploads"</strong> above to dispatch queued episodes.
+                <div style={{
+                  background: '#0c101b',
+                  border: '1px solid #1a2234',
+                  borderRadius: '8px',
+                  padding: '18px 20px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '16px',
+                }}>
+                  <div>
+                    <div style={{ color: '#f8fafc', fontWeight: '600', fontSize: '13px' }}>
+                      {stats.uploadedVideos} Titles / Episodes Fully Encoded &amp; Stream Ready
                     </div>
-                  ) : (
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px', textAlign: 'left' }}>
-                      <thead>
-                        <tr style={{ background: '#0f1422', color: '#64748b', borderBottom: '1px solid #1a2234' }}>
-                          <th style={{ padding: '8px 12px', fontWeight: '500' }}>Title</th>
-                          <th style={{ padding: '8px 12px', fontWeight: '500' }}>Type</th>
-                          <th style={{ padding: '8px 12px', fontWeight: '500' }}>DM ID</th>
-                          <th style={{ padding: '8px 12px', fontWeight: '500' }}>Drive</th>
-                          <th style={{ padding: '8px 12px', fontWeight: '500' }}>Endpoint</th>
-                          <th style={{ padding: '8px 12px', fontWeight: '500' }}>Action</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {videos.filter(v => v.upload_status === 'uploaded').slice(0, 5).map((v, i) => {
-                          const apiPath = v.is_movie === 1 ? `/ko/${v.tmdb_id}` : `/ko/${v.tmdb_id}/${v.season}/${v.episode}`;
-                          return (
-                            <tr key={v.id} style={{ borderBottom: i < 4 ? '1px solid #1a2234' : 'none' }}>
-                              <td style={{ padding: '8px 12px', fontWeight: '500', color: '#f8fafc' }}>
-                                {v.title_name || `TMDB #${v.tmdb_id}`}
-                                {v.is_movie === 0 && <span style={{ color: '#64748b', marginLeft: '4px' }}>(S{v.season}E{v.episode})</span>}
-                              </td>
-                              <td style={{ padding: '8px 12px' }}>
-                                <span style={{
-                                  padding: '1px 5px',
-                                  borderRadius: '3px',
-                                  fontSize: '10px',
-                                  fontWeight: '600',
-                                  background: v.is_movie === 1 ? 'rgba(99,102,241,0.1)' : 'rgba(56,189,248,0.1)',
-                                  color: v.is_movie === 1 ? '#a5b4fc' : '#38bdf8',
-                                }}>
-                                  {v.is_movie === 1 ? 'MOVIE' : 'SERIES'}
-                                </span>
-                              </td>
-                              <td style={{ padding: '8px 12px', fontFamily: 'monospace', color: '#34d399' }}>{v.dm_video_id || '—'}</td>
-                              <td style={{ padding: '8px 12px', color: '#94a3b8' }}>{v.account_label || (v.dm_account_id ? `#${v.dm_account_id}` : '—')}</td>
-                              <td style={{ padding: '8px 12px' }}>
-                                <button
-                                  onClick={() => handleCopy(apiPath, `api-${v.id}`)}
-                                  style={{
-                                    background: '#131d31',
-                                    border: '1px solid #1a2234',
-                                    color: '#38bdf8',
-                                    padding: '2px 6px',
-                                    borderRadius: '3px',
-                                    fontSize: '11px',
-                                    fontFamily: 'monospace',
-                                    cursor: 'pointer',
-                                    display: 'inline-flex',
-                                    alignItems: 'center',
-                                    gap: '3px',
-                                  }}
-                                >
-                                  <span>{apiPath}</span>
-                                  {copiedId === `api-${v.id}` ? <Check size={10} /> : <Copy size={10} />}
-                                </button>
-                              </td>
-                              <td style={{ padding: '8px 12px' }}>
-                                <button
-                                  onClick={() => setPreviewVideo(v)}
-                                  style={{
-                                    background: '#0284c7',
-                                    border: 'none',
-                                    color: '#ffffff',
-                                    padding: '3px 8px',
-                                    borderRadius: '3px',
-                                    fontSize: '11px',
-                                    cursor: 'pointer',
-                                  }}
-                                >
-                                  Play
-                                </button>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  )}
+                    <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '2px' }}>
+                      Access direct Dailymotion streaming tabs, responsive player previews, and public JSON data endpoints in the Available Videos menu.
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setActiveTab('available')}
+                    style={{
+                      background: '#0284c7',
+                      border: 'none',
+                      color: '#ffffff',
+                      padding: '8px 16px',
+                      borderRadius: '6px',
+                      fontSize: '12px',
+                      fontWeight: '600',
+                      cursor: 'pointer',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                    }}
+                  >
+                    <Video size={14} />
+                    <span>View Available Videos</span>
+                  </button>
                 </div>
               </div>
 
@@ -1251,7 +1529,7 @@ export default function Dashboard() {
           )}
 
           {/* ─────────────────────────────────────────────────────────
-              TAB 2: SWARM DRIVES (CLEAN LIST)
+              TAB 2: SWARM DRIVES
           ────────────────────────────────────────────────────────── */}
           {activeTab === 'nodes' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
@@ -1356,27 +1634,84 @@ export default function Dashboard() {
           )}
 
           {/* ─────────────────────────────────────────────────────────
-              TAB 3: CATALOG INDEX (CLEAN TABLE)
+              TAB 3: CATALOG INDEX (PAGINATED)
           ────────────────────────────────────────────────────────── */}
           {activeTab === 'catalog' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-              <div style={{ display: 'flex', gap: '8px' }}>
-                <input
-                  type="text"
-                  placeholder="Search catalog by title, TMDB ID, slug..."
-                  value={searchQuery}
-                  onChange={e => setSearchQuery(e.target.value)}
+              {/* Search & Filters */}
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                <div style={{ position: 'relative', flex: 1, minWidth: '240px' }}>
+                  <input
+                    type="text"
+                    placeholder="Search catalog by title, TMDB ID, slug..."
+                    value={catalogSearch}
+                    onChange={e => {
+                      setCatalogSearch(e.target.value);
+                      fetchCatalog(1, catalogLimit, e.target.value, catalogKind, catalogStatus);
+                    }}
+                    style={{
+                      width: '100%',
+                      background: '#0c101b',
+                      border: '1px solid #1a2234',
+                      borderRadius: '5px',
+                      padding: '7px 10px 7px 30px',
+                      color: '#f8fafc',
+                      fontSize: '12px',
+                      outline: 'none',
+                      boxSizing: 'border-box',
+                    }}
+                  />
+                  <Search size={13} color="#64748b" style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)' }} />
+                </div>
+
+                <select
+                  value={catalogKind}
+                  onChange={e => {
+                    const k = e.target.value as any;
+                    setCatalogKind(k);
+                    fetchCatalog(1, catalogLimit, catalogSearch, k, catalogStatus);
+                  }}
                   style={{
-                    flex: 1,
                     background: '#0c101b',
                     border: '1px solid #1a2234',
                     borderRadius: '5px',
-                    padding: '6px 10px',
-                    color: '#f8fafc',
+                    color: '#94a3b8',
                     fontSize: '12px',
+                    padding: '6px 10px',
                     outline: 'none',
+                    cursor: 'pointer',
                   }}
-                />
+                >
+                  <option value="all">All Types</option>
+                  <option value="series">Series Only</option>
+                  <option value="movie">Movies Only</option>
+                </select>
+
+                <select
+                  value={catalogStatus}
+                  onChange={e => {
+                    const s = e.target.value;
+                    setCatalogStatus(s);
+                    fetchCatalog(1, catalogLimit, catalogSearch, catalogKind, s);
+                  }}
+                  style={{
+                    background: '#0c101b',
+                    border: '1px solid #1a2234',
+                    borderRadius: '5px',
+                    color: '#94a3b8',
+                    fontSize: '12px',
+                    padding: '6px 10px',
+                    outline: 'none',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <option value="all">All Statuses</option>
+                  <option value="discovered">Discovered</option>
+                  <option value="processing">Processing</option>
+                  <option value="completed">Completed</option>
+                  <option value="blacklisted">Blacklisted</option>
+                </select>
+
                 <button
                   onClick={() => handleTriggerPipeline('resolve_tmdb', { resetFailed: true })}
                   disabled={pipelineLoading === 'resolve_tmdb'}
@@ -1395,6 +1730,7 @@ export default function Dashboard() {
                 </button>
               </div>
 
+              {/* Paginated Table */}
               <div style={{ background: '#0c101b', border: '1px solid #1a2234', borderRadius: '8px', overflow: 'hidden' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px', textAlign: 'left' }}>
                   <thead>
@@ -1410,168 +1746,44 @@ export default function Dashboard() {
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredTitles.map((item, i) => (
-                      <tr key={item.id} style={{ borderBottom: i < filteredTitles.length - 1 ? '1px solid #1a2234' : 'none' }}>
-                        <td style={{ padding: '8px 12px', color: '#475569' }}>{item.id}</td>
-                        <td style={{ padding: '8px 12px', fontWeight: '500', color: '#f8fafc' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                            <span>{item.title}</span>
-                            {item.is_on_air === 1 && (
-                              <span style={{
-                                padding: '1px 5px',
-                                borderRadius: '3px',
-                                fontSize: '9px',
-                                fontWeight: '700',
-                                background: 'rgba(245,158,11,0.15)',
-                                color: '#f59e0b',
-                                border: '1px solid rgba(245,158,11,0.3)',
-                              }}>
-                                ON-AIR
-                              </span>
-                            )}
-                          </div>
-                          <div style={{ fontSize: '10px', color: '#475569' }}>
-                            {item.slug}
-                            {item.next_air_date && <span style={{ color: '#f59e0b', marginLeft: '6px' }}>Next: {item.next_air_date}</span>}
-                          </div>
-                        </td>
-                        <td style={{ padding: '8px 12px' }}>
-                          <span style={{
-                            padding: '1px 5px',
-                            borderRadius: '3px',
-                            fontSize: '10px',
-                            fontWeight: '600',
-                            background: item.kind === 'movie' ? 'rgba(99,102,241,0.1)' : 'rgba(56,189,248,0.1)',
-                            color: item.kind === 'movie' ? '#a5b4fc' : '#38bdf8',
-                          }}>
-                            {item.kind.toUpperCase()}
-                          </span>
-                        </td>
-                        <td style={{ padding: '8px 12px', color: '#94a3b8' }}>{item.year || '—'}</td>
-                        <td style={{ padding: '8px 12px' }}>
-                          {item.tmdb_id ? (
-                            <a
-                              href={`https://www.themoviedb.org/${item.kind === 'movie' ? 'movie' : 'tv'}/${item.tmdb_id}`}
-                              target="_blank"
-                              rel="noreferrer"
-                              style={{ color: '#38bdf8', textDecoration: 'none', fontFamily: 'monospace' }}
-                            >
-                              #{item.tmdb_id} ↗
-                            </a>
-                          ) : (
-                            <span style={{ color: '#f87171' }}>Unmatched</span>
-                          )}
-                        </td>
-                        <td style={{ padding: '8px 12px', color: '#94a3b8' }}>
-                          {item.kind === 'series' ? `${item.total_seasons || 1}S / ${item.total_episodes || 0}E` : '1 Movie'}
-                        </td>
-                        <td style={{ padding: '8px 12px' }}>
-                          <span style={{
-                            padding: '1px 5px',
-                            borderRadius: '3px',
-                            fontSize: '10px',
-                            fontWeight: '600',
-                            background: item.status === 'blacklisted' ? 'rgba(239,68,68,0.15)' : item.status === 'completed' ? 'rgba(16,185,129,0.1)' : item.is_on_air === 1 ? 'rgba(245,158,11,0.1)' : '#131d31',
-                            color: item.status === 'blacklisted' ? '#f87171' : item.status === 'completed' ? '#34d399' : item.is_on_air === 1 ? '#f59e0b' : '#94a3b8',
-                            border: item.status === 'blacklisted' ? '1px solid rgba(239,68,68,0.3)' : 'none',
-                          }}>
-                            {item.status === 'blacklisted' ? '🚫 BLACKLISTED' : (item.is_on_air === 1 && item.status !== 'completed' ? 'ON-AIR' : item.status.toUpperCase())}
-                          </span>
-                        </td>
-                        <td style={{ padding: '8px 12px' }}>
-                          {item.status === 'blacklisted' ? (
-                            <button
-                              onClick={() => handleUnblacklistTitle(item.id)}
-                              title="Restore show to discovered state to resume scraping & uploading"
-                              style={{
-                                background: '#131d31',
-                                border: '1px solid #1a2234',
-                                color: '#34d399',
-                                padding: '3px 8px',
-                                borderRadius: '3px',
-                                fontSize: '11px',
-                                fontWeight: '600',
-                                cursor: 'pointer',
-                              }}
-                            >
-                              Unblock
-                            </button>
-                          ) : (
-                            <button
-                              onClick={() => handleBlacklistTitle(item.id)}
-                              title="Blacklist this show: completely halts all future episode scraping and uploads to prevent strikes"
-                              style={{
-                                background: 'rgba(239,68,68,0.08)',
-                                border: '1px solid rgba(239,68,68,0.2)',
-                                color: '#f87171',
-                                padding: '3px 8px',
-                                borderRadius: '3px',
-                                fontSize: '11px',
-                                cursor: 'pointer',
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                gap: '3px',
-                              }}
-                            >
-                              <Ban size={11} />
-                              <span>Blacklist</span>
-                            </button>
-                          )}
+                    {catalogLoading ? (
+                      <tr>
+                        <td colSpan={8} style={{ padding: '28px', textAlign: 'center', color: '#64748b' }}>
+                          <RefreshCw size={18} className="animate-spin" style={{ margin: '0 auto 6px auto' }} />
+                          <div>Loading catalog page...</div>
                         </td>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {/* ─────────────────────────────────────────────────────────
-              TAB 4: HOSTED VIDEOS (CLEAN LIST)
-          ────────────────────────────────────────────────────────── */}
-          {activeTab === 'files' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-              <input
-                type="text"
-                placeholder="Search hosted video files..."
-                value={searchQuery}
-                onChange={e => setSearchQuery(e.target.value)}
-                style={{
-                  background: '#0c101b',
-                  border: '1px solid #1a2234',
-                  borderRadius: '5px',
-                  padding: '6px 10px',
-                  color: '#f8fafc',
-                  fontSize: '12px',
-                  outline: 'none',
-                }}
-              />
-
-              <div style={{ background: '#0c101b', border: '1px solid #1a2234', borderRadius: '8px', overflow: 'hidden' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px', textAlign: 'left' }}>
-                  <thead>
-                    <tr style={{ background: '#0f1422', color: '#64748b', borderBottom: '1px solid #1a2234' }}>
-                      <th style={{ padding: '8px 12px', fontWeight: '500' }}>Title</th>
-                      <th style={{ padding: '8px 12px', fontWeight: '500' }}>Type</th>
-                      <th style={{ padding: '8px 12px', fontWeight: '500' }}>Status</th>
-                      <th style={{ padding: '8px 12px', fontWeight: '500' }}>DM ID</th>
-                      <th style={{ padding: '8px 12px', fontWeight: '500' }}>Node</th>
-                      <th style={{ padding: '8px 12px', fontWeight: '500' }}>Endpoint</th>
-                      <th style={{ padding: '8px 12px', fontWeight: '500' }}>Action</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredVideos.map((v, i) => {
-                      const apiPath = v.is_movie === 1 ? `/ko/${v.tmdb_id}` : `/ko/${v.tmdb_id}/${v.season}/${v.episode}`;
-                      const isHold = v.upload_status === 'on_hold';
-                      const isPending = v.upload_status === 'pending';
-                      const isUploaded = v.upload_status === 'uploaded';
-                      
-                      return (
-                        <tr key={v.id} style={{ borderBottom: i < filteredVideos.length - 1 ? '1px solid #1a2234' : 'none' }}>
+                    ) : titles.length === 0 ? (
+                      <tr>
+                        <td colSpan={8} style={{ padding: '28px', textAlign: 'center', color: '#64748b' }}>
+                          No catalog entries match the current filter.
+                        </td>
+                      </tr>
+                    ) : (
+                      titles.map((item, i) => (
+                        <tr key={item.id} style={{ borderBottom: i < titles.length - 1 ? '1px solid #1a2234' : 'none' }}>
+                          <td style={{ padding: '8px 12px', color: '#475569' }}>{item.id}</td>
                           <td style={{ padding: '8px 12px', fontWeight: '500', color: '#f8fafc' }}>
-                            {v.title_name || `TMDB #${v.tmdb_id}`}
-                            {v.is_movie === 0 && <span style={{ color: '#64748b', marginLeft: '4px' }}>(S{v.season}E{v.episode})</span>}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              <span>{item.title}</span>
+                              {item.is_on_air === 1 && (
+                                <span style={{
+                                  padding: '1px 5px',
+                                  borderRadius: '3px',
+                                  fontSize: '9px',
+                                  fontWeight: '700',
+                                  background: 'rgba(245,158,11,0.15)',
+                                  color: '#f59e0b',
+                                  border: '1px solid rgba(245,158,11,0.3)',
+                                }}>
+                                  ON-AIR
+                                </span>
+                              )}
+                            </div>
+                            <div style={{ fontSize: '10px', color: '#475569' }}>
+                              {item.slug}
+                              {item.next_air_date && <span style={{ color: '#f59e0b', marginLeft: '6px' }}>Next: {item.next_air_date}</span>}
+                            </div>
                           </td>
                           <td style={{ padding: '8px 12px' }}>
                             <span style={{
@@ -1579,92 +1791,468 @@ export default function Dashboard() {
                               borderRadius: '3px',
                               fontSize: '10px',
                               fontWeight: '600',
-                              background: v.is_movie === 1 ? 'rgba(99,102,241,0.1)' : 'rgba(56,189,248,0.1)',
-                              color: v.is_movie === 1 ? '#a5b4fc' : '#38bdf8',
+                              background: item.kind === 'movie' ? 'rgba(99,102,241,0.1)' : 'rgba(56,189,248,0.1)',
+                              color: item.kind === 'movie' ? '#a5b4fc' : '#38bdf8',
                             }}>
-                              {v.is_movie === 1 ? 'MOVIE' : 'SERIES'}
+                              {item.kind.toUpperCase()}
+                            </span>
+                          </td>
+                          <td style={{ padding: '8px 12px', color: '#94a3b8' }}>{item.year || '—'}</td>
+                          <td style={{ padding: '8px 12px' }}>
+                            {item.tmdb_id ? (
+                              <a
+                                href={`https://www.themoviedb.org/${item.kind === 'movie' ? 'movie' : 'tv'}/${item.tmdb_id}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                style={{ color: '#38bdf8', textDecoration: 'none', fontFamily: 'monospace' }}
+                              >
+                                #{item.tmdb_id} ↗
+                              </a>
+                            ) : (
+                              <span style={{ color: '#f87171' }}>Unmatched</span>
+                            )}
+                          </td>
+                          <td style={{ padding: '8px 12px', color: '#94a3b8' }}>
+                            {item.kind === 'series' ? `${item.total_seasons || 1}S / ${item.total_episodes || 0}E` : '1 Movie'}
+                          </td>
+                          <td style={{ padding: '8px 12px' }}>
+                            <span style={{
+                              padding: '1px 5px',
+                              borderRadius: '3px',
+                              fontSize: '10px',
+                              fontWeight: '600',
+                              background: item.status === 'blacklisted' ? 'rgba(239,68,68,0.15)' : item.status === 'completed' ? 'rgba(16,185,129,0.1)' : item.is_on_air === 1 ? 'rgba(245,158,11,0.1)' : '#131d31',
+                              color: item.status === 'blacklisted' ? '#f87171' : item.status === 'completed' ? '#34d399' : item.is_on_air === 1 ? '#f59e0b' : '#94a3b8',
+                              border: item.status === 'blacklisted' ? '1px solid rgba(239,68,68,0.3)' : 'none',
+                            }}>
+                              {item.status === 'blacklisted' ? '🚫 BLACKLISTED' : (item.is_on_air === 1 && item.status !== 'completed' ? 'ON-AIR' : item.status.toUpperCase())}
                             </span>
                           </td>
                           <td style={{ padding: '8px 12px' }}>
-                            <span
-                              title={v.upload_status === 'on_hold' || v.upload_status === 'failed' ? (v.dm_title || 'Held for swarm capacity') : undefined}
-                              style={{
-                                padding: '2px 6px',
-                                borderRadius: '3px',
-                                fontSize: '10px',
-                                fontWeight: '600',
-                                background: isUploaded ? 'rgba(16,185,129,0.1)' : isHold ? 'rgba(245,158,11,0.15)' : isPending ? 'rgba(56,189,248,0.1)' : 'rgba(239,68,68,0.1)',
-                                color: isUploaded ? '#34d399' : isHold ? '#fbbf24' : isPending ? '#38bdf8' : '#f87171',
-                                border: isHold ? '1px solid rgba(245,158,11,0.3)' : 'none',
-                              }}
-                            >
-                              {isUploaded ? 'UPLOADED' : isHold ? 'ON HOLD' : isPending ? 'PENDING' : 'FAILED'}
-                            </span>
-                          </td>
-                          <td style={{ padding: '8px 12px', fontFamily: 'monospace', color: v.dm_video_id ? '#34d399' : '#64748b' }}>
-                            {v.dm_video_id || '—'}
-                          </td>
-                          <td style={{ padding: '8px 12px', color: '#94a3b8' }}>{v.account_label || (v.dm_account_id ? `#${v.dm_account_id}` : '—')}</td>
-                          <td style={{ padding: '8px 12px' }}>
-                            <button
-                              onClick={() => handleCopy(apiPath, `api-${v.id}`)}
-                              style={{
-                                background: '#131d31',
-                                border: '1px solid #1a2234',
-                                color: '#38bdf8',
-                                padding: '2px 6px',
-                                borderRadius: '3px',
-                                fontSize: '11px',
-                                fontFamily: 'monospace',
-                                cursor: 'pointer',
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                gap: '3px',
-                              }}
-                            >
-                              <span>{apiPath}</span>
-                              {copiedId === `api-${v.id}` ? <Check size={10} /> : <Copy size={10} />}
-                            </button>
-                          </td>
-                          <td style={{ padding: '8px 12px' }}>
-                            {isUploaded ? (
+                            {item.status === 'blacklisted' ? (
                               <button
-                                onClick={() => setPreviewVideo(v)}
+                                onClick={() => handleUnblacklistTitle(item.id)}
+                                title="Restore show to discovered state to resume scraping & uploads"
                                 style={{
-                                  background: '#0284c7',
-                                  border: 'none',
-                                  color: '#ffffff',
+                                  background: '#131d31',
+                                  border: '1px solid #1a2234',
+                                  color: '#34d399',
+                                  padding: '3px 8px',
+                                  borderRadius: '3px',
+                                  fontSize: '11px',
+                                  fontWeight: '600',
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                Unblock
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => handleBlacklistTitle(item.id)}
+                                title="Blacklist this show: halts all future episode uploads"
+                                style={{
+                                  background: 'rgba(239,68,68,0.08)',
+                                  border: '1px solid rgba(239,68,68,0.2)',
+                                  color: '#f87171',
                                   padding: '3px 8px',
                                   borderRadius: '3px',
                                   fontSize: '11px',
                                   cursor: 'pointer',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '3px',
                                 }}
                               >
-                                Play
+                                <Ban size={11} />
+                                <span>Blacklist</span>
                               </button>
-                            ) : (
-                              <span style={{ fontSize: '11px', color: '#64748b' }}>—</span>
                             )}
                           </td>
                         </tr>
-                      );
-                    })}
+                      ))
+                    )}
                   </tbody>
                 </table>
+
+                {/* Pagination Controls */}
+                {renderPagination(
+                  catalogPage,
+                  catalogTotalPages,
+                  catalogTotal,
+                  catalogLimit,
+                  (p) => fetchCatalog(p, catalogLimit, catalogSearch, catalogKind, catalogStatus),
+                  (l) => {
+                    setCatalogLimit(l);
+                    fetchCatalog(1, l, catalogSearch, catalogKind, catalogStatus);
+                  },
+                  catalogLoading
+                )}
               </div>
             </div>
           )}
 
           {/* ─────────────────────────────────────────────────────────
-              TAB 5: TAKEDOWNS & ACCOUNT HEALTH (SHIELD & STRIKE MONITOR)
+              TAB 4: AVAILABLE VIDEOS (DIRECT STREAM & DATA URL ENDPOINTS)
+          ────────────────────────────────────────────────────────── */}
+          {activeTab === 'available' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              {/* Header Info Banner */}
+              <div style={{
+                background: 'rgba(56, 189, 248, 0.05)',
+                border: '1px solid rgba(56, 189, 248, 0.2)',
+                borderRadius: '8px',
+                padding: '12px 18px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                flexWrap: 'wrap',
+                gap: '10px',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <Video size={18} color="#38bdf8" />
+                  <div>
+                    <span style={{ fontWeight: '600', color: '#f8fafc' }}>
+                      Available Video Streams ({videoTotal} Total)
+                    </span>
+                    <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '1px' }}>
+                      Click <strong>Direct URL</strong> to open/stream the Dailymotion video in a new tab, or <strong>Copy Data URL</strong> to copy the JSON endpoint payload.
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span style={{
+                    fontSize: '11px',
+                    padding: '2px 8px',
+                    borderRadius: '4px',
+                    background: 'rgba(16,185,129,0.15)',
+                    color: '#34d399',
+                    border: '1px solid rgba(16,185,129,0.3)',
+                    fontWeight: '600',
+                  }}>
+                    {stats.uploadedVideos} Encoded &amp; Live
+                  </span>
+                </div>
+              </div>
+
+              {/* Search & Filter Bar */}
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                <div style={{ position: 'relative', flex: 1, minWidth: '240px' }}>
+                  <input
+                    type="text"
+                    placeholder="Search available videos by drama title, TMDB ID, DM ID..."
+                    value={videoSearch}
+                    onChange={e => {
+                      setVideoSearch(e.target.value);
+                      fetchVideos(1, videoLimit, e.target.value, videoKind, videoStatusFilter);
+                    }}
+                    style={{
+                      width: '100%',
+                      background: '#0c101b',
+                      border: '1px solid #1a2234',
+                      borderRadius: '5px',
+                      padding: '7px 10px 7px 30px',
+                      color: '#f8fafc',
+                      fontSize: '12px',
+                      outline: 'none',
+                      boxSizing: 'border-box',
+                    }}
+                  />
+                  <Search size={13} color="#64748b" style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)' }} />
+                </div>
+
+                <select
+                  value={videoStatusFilter}
+                  onChange={e => {
+                    const s = e.target.value;
+                    setVideoStatusFilter(s);
+                    fetchVideos(1, videoLimit, videoSearch, videoKind, s);
+                  }}
+                  style={{
+                    background: '#0c101b',
+                    border: '1px solid #1a2234',
+                    borderRadius: '5px',
+                    color: videoStatusFilter === 'uploaded' ? '#34d399' : '#94a3b8',
+                    fontSize: '12px',
+                    fontWeight: '600',
+                    padding: '6px 10px',
+                    outline: 'none',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <option value="uploaded">✓ Stream Ready (Uploaded)</option>
+                  <option value="all">All Statuses</option>
+                  <option value="pending">Pending Queue</option>
+                  <option value="on_hold">On Hold (Capacity)</option>
+                  <option value="failed">Failed</option>
+                </select>
+
+                <select
+                  value={videoKind}
+                  onChange={e => {
+                    const k = e.target.value as any;
+                    setVideoKind(k);
+                    fetchVideos(1, videoLimit, videoSearch, k, videoStatusFilter);
+                  }}
+                  style={{
+                    background: '#0c101b',
+                    border: '1px solid #1a2234',
+                    borderRadius: '5px',
+                    color: '#94a3b8',
+                    fontSize: '12px',
+                    padding: '6px 10px',
+                    outline: 'none',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <option value="all">All Formats</option>
+                  <option value="series">Series Only</option>
+                  <option value="movie">Movies Only</option>
+                </select>
+              </div>
+
+              {/* Paginated Video Files Table */}
+              <div style={{ background: '#0c101b', border: '1px solid #1a2234', borderRadius: '8px', overflow: 'hidden' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px', textAlign: 'left' }}>
+                  <thead>
+                    <tr style={{ background: '#0f1422', color: '#64748b', borderBottom: '1px solid #1a2234' }}>
+                      <th style={{ padding: '8px 12px', fontWeight: '500' }}>Available Title</th>
+                      <th style={{ padding: '8px 12px', fontWeight: '500' }}>Type</th>
+                      <th style={{ padding: '8px 12px', fontWeight: '500' }}>Quality</th>
+                      <th style={{ padding: '8px 12px', fontWeight: '500' }}>Swarm Node</th>
+                      <th style={{ padding: '8px 12px', fontWeight: '500' }}>Direct Stream URL</th>
+                      <th style={{ padding: '8px 12px', fontWeight: '500' }}>Data JSON URL</th>
+                      <th style={{ padding: '8px 12px', fontWeight: '500' }}>Preview</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {videosLoading ? (
+                      <tr>
+                        <td colSpan={7} style={{ padding: '28px', textAlign: 'center', color: '#64748b' }}>
+                          <RefreshCw size={18} className="animate-spin" style={{ margin: '0 auto 6px auto' }} />
+                          <div>Loading available videos...</div>
+                        </td>
+                      </tr>
+                    ) : videos.length === 0 ? (
+                      <tr>
+                        <td colSpan={7} style={{ padding: '28px', textAlign: 'center', color: '#64748b' }}>
+                          No video entries match the current filter.
+                        </td>
+                      </tr>
+                    ) : (
+                      videos.map((v, i) => {
+                        const isUploaded = v.upload_status === 'uploaded' && v.dm_video_id;
+                        const dmStreamUrl = v.dm_video_id ? `https://www.dailymotion.com/video/${v.dm_video_id}` : null;
+                        const originUrl = typeof window !== 'undefined' ? window.location.origin : '';
+                        const apiPath = v.is_movie === 1 ? `/ko/${v.tmdb_id}` : `/ko/${v.tmdb_id}/${v.season}/${v.episode}`;
+                        const fullDataUrl = `${originUrl}${apiPath}`;
+
+                        return (
+                          <tr key={v.id} style={{ borderBottom: i < videos.length - 1 ? '1px solid #1a2234' : 'none' }}>
+                            {/* Title & Episode */}
+                            <td style={{ padding: '8px 12px', fontWeight: '500', color: '#f8fafc' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                {v.poster_url && (
+                                  <img
+                                    src={v.poster_url}
+                                    alt=""
+                                    style={{ width: '24px', height: '34px', objectFit: 'cover', borderRadius: '3px', flexShrink: 0 }}
+                                  />
+                                )}
+                                <div>
+                                  <div style={{ fontWeight: '600', color: '#f8fafc' }}>
+                                    {v.title_name || `TMDB #${v.tmdb_id}`}
+                                  </div>
+                                  <div style={{ fontSize: '11px', color: '#38bdf8', marginTop: '1px' }}>
+                                    {v.is_movie === 1 ? 'Full Movie' : `Season ${v.season || 1} • Episode ${v.episode}`}
+                                  </div>
+                                </div>
+                              </div>
+                            </td>
+
+                            {/* Type */}
+                            <td style={{ padding: '8px 12px' }}>
+                              <span style={{
+                                padding: '1px 5px',
+                                borderRadius: '3px',
+                                fontSize: '10px',
+                                fontWeight: '600',
+                                background: v.is_movie === 1 ? 'rgba(99,102,241,0.1)' : 'rgba(56,189,248,0.1)',
+                                color: v.is_movie === 1 ? '#a5b4fc' : '#38bdf8',
+                              }}>
+                                {v.is_movie === 1 ? 'MOVIE' : 'SERIES'}
+                              </span>
+                            </td>
+
+                            {/* Resolution & Size */}
+                            <td style={{ padding: '8px 12px' }}>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                                <span style={{
+                                  padding: '1px 5px',
+                                  borderRadius: '3px',
+                                  fontSize: '9px',
+                                  fontWeight: '700',
+                                  background: 'rgba(16,185,129,0.12)',
+                                  color: '#34d399',
+                                  border: '1px solid rgba(16,185,129,0.25)',
+                                  width: 'fit-content',
+                                }}>
+                                  {v.resolution || '1080p'}
+                                </span>
+                                {v.file_size_mb && (
+                                  <span style={{ fontSize: '10px', color: '#64748b' }}>
+                                    {(v.file_size_mb / 1024).toFixed(2)} GB
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+
+                            {/* Swarm Node */}
+                            <td style={{ padding: '8px 12px', color: '#94a3b8' }}>
+                              {v.account_label || (v.dm_account_id ? `#${v.dm_account_id}` : '—')}
+                            </td>
+
+                            {/* 1. DIRECT STREAM URL (Open in new tab + Copy) */}
+                            <td style={{ padding: '8px 12px' }}>
+                              {isUploaded && dmStreamUrl ? (
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                                  <a
+                                    href={dmStreamUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    style={{
+                                      background: 'rgba(2, 132, 199, 0.12)',
+                                      border: '1px solid rgba(2, 132, 199, 0.3)',
+                                      color: '#38bdf8',
+                                      padding: '3px 8px',
+                                      borderRadius: '4px',
+                                      fontSize: '11px',
+                                      fontWeight: '600',
+                                      textDecoration: 'none',
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      gap: '4px',
+                                    }}
+                                  >
+                                    <span>Direct URL</span>
+                                    <ExternalLink size={11} />
+                                  </a>
+
+                                  <button
+                                    onClick={() => handleCopy(dmStreamUrl, `dm-${v.id}`, 'Dailymotion streaming URL copied!')}
+                                    title="Copy direct Dailymotion streaming URL"
+                                    style={{
+                                      background: '#131d31',
+                                      border: '1px solid #1a2234',
+                                      color: copiedId === `dm-${v.id}` ? '#34d399' : '#94a3b8',
+                                      padding: '3px 6px',
+                                      borderRadius: '4px',
+                                      cursor: 'pointer',
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                    }}
+                                  >
+                                    {copiedId === `dm-${v.id}` ? <Check size={11} /> : <Copy size={11} />}
+                                  </button>
+                                </div>
+                              ) : (
+                                <span style={{
+                                  fontSize: '10px',
+                                  padding: '2px 6px',
+                                  borderRadius: '3px',
+                                  background: v.upload_status === 'on_hold' ? 'rgba(245,158,11,0.15)' : '#131d31',
+                                  color: v.upload_status === 'on_hold' ? '#fbbf24' : '#64748b',
+                                }}>
+                                  {v.upload_status === 'on_hold' ? 'ON HOLD' : v.upload_status.toUpperCase()}
+                                </span>
+                              )}
+                            </td>
+
+                            {/* 2. COPY DATA URL (Clean JSON Endpoint) */}
+                            <td style={{ padding: '8px 12px' }}>
+                              <button
+                                onClick={() => handleCopy(fullDataUrl, `data-${v.id}`, 'Clean JSON Data Endpoint URL copied!')}
+                                title={`Copy JSON Data Endpoint: ${fullDataUrl}`}
+                                style={{
+                                  background: copiedId === `data-${v.id}` ? 'rgba(16,185,129,0.12)' : '#131d31',
+                                  border: `1px solid ${copiedId === `data-${v.id}` ? 'rgba(16,185,129,0.3)' : '#1a2234'}`,
+                                  color: copiedId === `data-${v.id}` ? '#34d399' : '#38bdf8',
+                                  padding: '3px 8px',
+                                  borderRadius: '4px',
+                                  fontSize: '11px',
+                                  fontFamily: 'monospace',
+                                  cursor: 'pointer',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px',
+                                }}
+                              >
+                                <Code2 size={11} />
+                                <span>{apiPath}</span>
+                                {copiedId === `data-${v.id}` ? <Check size={10} /> : <Copy size={10} />}
+                              </button>
+                            </td>
+
+                            {/* 3. PLAY MODAL */}
+                            <td style={{ padding: '8px 12px' }}>
+                              {isUploaded ? (
+                                <button
+                                  onClick={() => setPreviewVideo(v)}
+                                  style={{
+                                    background: '#0284c7',
+                                    border: 'none',
+                                    color: '#ffffff',
+                                    padding: '4px 9px',
+                                    borderRadius: '4px',
+                                    fontSize: '11px',
+                                    fontWeight: '600',
+                                    cursor: 'pointer',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '3px',
+                                  }}
+                                >
+                                  <Play size={10} fill="#ffffff" />
+                                  <span>Play</span>
+                                </button>
+                              ) : (
+                                <span style={{ fontSize: '11px', color: '#64748b' }}>—</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+
+                {/* Pagination Controls */}
+                {renderPagination(
+                  videoPage,
+                  videoTotalPages,
+                  videoTotal,
+                  videoLimit,
+                  (p) => fetchVideos(p, videoLimit, videoSearch, videoKind, videoStatusFilter),
+                  (l) => {
+                    setVideoLimit(l);
+                    fetchVideos(1, l, videoSearch, videoKind, videoStatusFilter);
+                  },
+                  videosLoading
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ─────────────────────────────────────────────────────────
+              TAB 5: TAKEDOWNS & ACCOUNT HEALTH
           ────────────────────────────────────────────────────────── */}
           {activeTab === 'takedowns' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
               
               {/* Status Header Banner */}
               <div style={{
-                background: takedowns.length === 0 ? 'rgba(16,185,129,0.06)' : 'rgba(239,68,68,0.08)',
-                border: `1px solid ${takedowns.length === 0 ? 'rgba(16,185,129,0.25)' : 'rgba(239,68,68,0.3)'}`,
+                background: stats.takedownVideos === 0 ? 'rgba(16,185,129,0.06)' : 'rgba(239,68,68,0.08)',
+                border: `1px solid ${stats.takedownVideos === 0 ? 'rgba(16,185,129,0.25)' : 'rgba(239,68,68,0.3)'}`,
                 borderRadius: '8px',
                 padding: '16px 20px',
                 display: 'flex',
@@ -1678,24 +2266,24 @@ export default function Dashboard() {
                     width: '38px',
                     height: '38px',
                     borderRadius: '8px',
-                    background: takedowns.length === 0 ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)',
+                    background: stats.takedownVideos === 0 ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    color: takedowns.length === 0 ? '#34d399' : '#f87171',
+                    color: stats.takedownVideos === 0 ? '#34d399' : '#f87171',
                   }}>
-                    {takedowns.length === 0 ? <ShieldCheck size={22} /> : <ShieldAlert size={22} />}
+                    {stats.takedownVideos === 0 ? <ShieldCheck size={22} /> : <ShieldAlert size={22} />}
                   </div>
                   <div>
                     <div style={{ fontWeight: '700', fontSize: '14px', color: '#f8fafc' }}>
-                      {takedowns.length === 0
+                      {stats.takedownVideos === 0
                         ? 'Swarm Shield Active — 100% Video Streams Healthy'
-                        : `${takedowns.length} Video Stream(s) Suspended by Dailymotion Fingerprint Detection`}
+                        : `${stats.takedownVideos} Video Stream(s) Suspended by Dailymotion Fingerprint Detection`}
                     </div>
                     <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '2px' }}>
-                      {takedowns.length === 0
+                      {stats.takedownVideos === 0
                         ? 'All hosted video links are alive and verified. Auto-quarantine protection is safeguarding worker nodes.'
-                        : 'Access suspended by Audible Magic / INA digital fingerprinting. Affected accounts auto-quarantined to protect channels.'}
+                        : 'Access suspended by digital fingerprinting. Affected accounts auto-quarantined to protect channels.'}
                     </div>
                   </div>
                 </div>
@@ -1759,23 +2347,23 @@ export default function Dashboard() {
                 {[
                   {
                     label: 'Flagged Takedowns',
-                    value: takedowns.length,
-                    sub: takedowns.length === 0 ? 'Zero active suspensions' : 'Suspended by fingerprint detector',
-                    color: takedowns.length === 0 ? '#34d399' : '#f87171',
+                    value: stats.takedownVideos,
+                    sub: stats.takedownVideos === 0 ? 'Zero active suspensions' : 'Suspended by fingerprint detector',
+                    color: stats.takedownVideos === 0 ? '#34d399' : '#f87171',
                     icon: ShieldAlert,
                   },
                   {
                     label: 'Healthy Worker Drives',
-                    value: `${accounts.filter(a => a.is_active === 1 && (a.strike_count || 0) < 2).length} / ${accounts.length}`,
+                    value: `${stats.activeAccounts} / ${accounts.length || stats.activeAccounts}`,
                     sub: 'Active upload capacity ready',
                     color: '#38bdf8',
                     icon: HardDrive,
                   },
                   {
                     label: 'Quarantined Nodes',
-                    value: accounts.filter(a => a.status === 'quarantined' || (a.strike_count || 0) >= 2).length,
+                    value: stats.quarantinedAccounts,
                     sub: 'Auto-paused to prevent channel ban',
-                    color: accounts.some(a => a.status === 'quarantined' || (a.strike_count || 0) >= 2) ? '#fbbf24' : '#64748b',
+                    color: stats.quarantinedAccounts > 0 ? '#fbbf24' : '#64748b',
                     icon: Lock,
                   },
                   {
@@ -1799,7 +2387,7 @@ export default function Dashboard() {
                 ))}
               </div>
 
-              {/* Takedowns / Flagged Videos Table */}
+              {/* Takedowns / Flagged Videos Table with Pagination */}
               <div style={{ background: '#0c101b', border: '1px solid #1a2234', borderRadius: '8px', overflow: 'hidden' }}>
                 <div style={{
                   padding: '14px 18px',
@@ -1811,17 +2399,17 @@ export default function Dashboard() {
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                     <ShieldAlert size={16} color="#f87171" />
                     <span style={{ fontWeight: '600', color: '#f8fafc', fontSize: '13px' }}>
-                      Suspended Video Streams ({takedowns.length})
+                      Suspended Video Streams ({takedownTotal})
                     </span>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                     <span style={{ fontSize: '11px', color: '#64748b' }}>
                       Public API returns clean fallback; users never see 404 player errors.
                     </span>
-                    {takedowns.length > 0 && (
+                    {takedownTotal > 0 && (
                       <button
                         onClick={handleRequeueAllTakedowns}
-                        title="Re-queues all flagged videos to attempt alternative releases (different encoder/codec/source) and unblocks parent shows"
+                        title="Re-queues all flagged videos to attempt alternative releases and unblocks parent shows"
                         style={{
                           background: 'linear-gradient(135deg, #0284c7 0%, #0369a1 100%)',
                           border: 'none',
@@ -1844,7 +2432,12 @@ export default function Dashboard() {
                   </div>
                 </div>
 
-                {takedowns.length === 0 ? (
+                {takedownsLoading ? (
+                  <div style={{ padding: '28px', textAlign: 'center', color: '#64748b' }}>
+                    <RefreshCw size={18} className="animate-spin" style={{ margin: '0 auto 6px auto' }} />
+                    <div>Loading suspended streams...</div>
+                  </div>
+                ) : takedowns.length === 0 ? (
                   <div style={{ padding: '36px 20px', textAlign: 'center', color: '#64748b' }}>
                     <CheckCircle2 size={32} color="#34d399" style={{ margin: '0 auto 10px auto' }} />
                     <div style={{ color: '#f8fafc', fontWeight: '600', fontSize: '13px' }}>
@@ -1855,185 +2448,173 @@ export default function Dashboard() {
                     </div>
                   </div>
                 ) : (
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px', textAlign: 'left' }}>
-                    <thead>
-                      <tr style={{ background: '#0f1422', color: '#64748b', borderBottom: '1px solid #1a2234' }}>
-                        <th style={{ padding: '8px 12px', fontWeight: '500' }}>Title</th>
-                        <th style={{ padding: '8px 12px', fontWeight: '500' }}>Type</th>
-                        <th style={{ padding: '8px 12px', fontWeight: '500' }}>Flagged Video ID</th>
-                        <th style={{ padding: '8px 12px', fontWeight: '500' }}>Worker Node</th>
-                        <th style={{ padding: '8px 12px', fontWeight: '500' }}>Detected</th>
-                        <th style={{ padding: '8px 12px', fontWeight: '500' }}>Reason</th>
-                        <th style={{ padding: '8px 12px', fontWeight: '500' }}>Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {takedowns.map((v, i) => (
-                        <tr key={v.id} style={{ borderBottom: i < takedowns.length - 1 ? '1px solid #1a2234' : 'none' }}>
-                          <td style={{ padding: '8px 12px', fontWeight: '500', color: '#f8fafc' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                              {v.poster_url && (
-                                <img
-                                  src={v.poster_url}
-                                  alt=""
-                                  style={{ width: '24px', height: '36px', objectFit: 'cover', borderRadius: '3px' }}
-                                />
-                              )}
-                              <div>
-                                <div>{v.title_name || `TMDB #${v.tmdb_id}`}</div>
-                                {v.is_movie === 0 && (
-                                  <span style={{ fontSize: '10px', color: '#64748b' }}>
-                                    Season {v.season}, Episode {v.episode}
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                          </td>
-                          <td style={{ padding: '8px 12px' }}>
-                            <span style={{
-                              padding: '1px 5px',
-                              borderRadius: '3px',
-                              fontSize: '10px',
-                              fontWeight: '600',
-                              background: v.is_movie === 1 ? 'rgba(99,102,241,0.1)' : 'rgba(56,189,248,0.1)',
-                              color: v.is_movie === 1 ? '#a5b4fc' : '#38bdf8',
-                            }}>
-                              {v.is_movie === 1 ? 'MOVIE' : 'SERIES'}
-                            </span>
-                          </td>
-                          <td style={{ padding: '8px 12px', fontFamily: 'monospace' }}>
-                            {v.dm_video_id ? (
-                              <a
-                                href={`https://www.dailymotion.com/video/${v.dm_video_id}`}
-                                target="_blank"
-                                rel="noreferrer"
-                                style={{ color: '#f87171', textDecoration: 'none' }}
-                              >
-                                {v.dm_video_id} ↗
-                              </a>
-                            ) : '—'}
-                          </td>
-                          <td style={{ padding: '8px 12px', color: '#94a3b8' }}>
-                            {v.account_label || (v.dm_account_id ? `#${v.dm_account_id}` : '—')}
-                          </td>
-                          <td style={{ padding: '8px 12px', color: '#64748b', fontSize: '11px' }}>
-                            {v.takedown_detected_at ? new Date(v.takedown_detected_at).toLocaleString() : 'Recently'}
-                          </td>
-                          <td style={{ padding: '8px 12px', color: '#fbbf24', fontSize: '11px' }}>
-                            {v.takedown_reason || 'Fingerprint Recognition Suspension'}
-                          </td>
-                          <td style={{ padding: '8px 12px' }}>
-                            <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
-                              {v.title_id && (
-                                v.title_status === 'blacklisted' ? (
-                                  <button
-                                    onClick={() => handleUnblacklistTitle(v.title_id)}
-                                    title="Show is blacklisted. Click to unblock."
-                                    style={{
-                                      background: 'rgba(239, 68, 68, 0.15)',
-                                      border: '1px solid rgba(239, 68, 68, 0.3)',
-                                      color: '#f87171',
-                                      padding: '3px 8px',
-                                      borderRadius: '3px',
-                                      fontSize: '11px',
-                                      fontWeight: '600',
-                                      cursor: 'pointer',
-                                    }}
-                                  >
-                                    🚫 Blacklisted
-                                  </button>
-                                ) : (
-                                  <button
-                                    onClick={() => handleBlacklistTitle(v.title_id)}
-                                    title="Completely stops all future episode uploads for this series to prevent strikes"
-                                    style={{
-                                      background: 'rgba(239, 68, 68, 0.1)',
-                                      border: '1px solid rgba(239, 68, 68, 0.3)',
-                                      color: '#f87171',
-                                      padding: '3px 8px',
-                                      borderRadius: '3px',
-                                      fontSize: '11px',
-                                      fontWeight: '600',
-                                      cursor: 'pointer',
-                                      display: 'inline-flex',
-                                      alignItems: 'center',
-                                      gap: '3px',
-                                    }}
-                                  >
-                                    <Ban size={11} />
-                                    <span>Stop Show</span>
-                                  </button>
-                                )
-                              )}
-                              <button
-                                onClick={() => handleRequeueTakedown(v.id)}
-                                title="Re-queues video to attempt upload from alternative release/encode onto clean node"
-                                style={{
-                                  background: '#0284c7',
-                                  border: 'none',
-                                  color: '#ffffff',
-                                  padding: '3px 8px',
-                                  borderRadius: '3px',
-                                  fontSize: '11px',
-                                  fontWeight: '600',
-                                  cursor: 'pointer',
-                                  display: 'inline-flex',
-                                  alignItems: 'center',
-                                  gap: '4px',
-                                }}
-                              >
-                                <RotateCcw size={11} />
-                                <span>Re-upload Alt</span>
-                              </button>
-                              <button
-                                onClick={() => handleDismissTakedown(v.id)}
-                                title="Archive this takedown entry"
-                                style={{
-                                  background: '#131d31',
-                                  border: '1px solid #1a2234',
-                                  color: '#94a3b8',
-                                  padding: '3px 8px',
-                                  borderRadius: '3px',
-                                  fontSize: '11px',
-                                  cursor: 'pointer',
-                                }}
-                              >
-                                Dismiss
-                              </button>
-                            </div>
-                          </td>
+                  <>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px', textAlign: 'left' }}>
+                      <thead>
+                        <tr style={{ background: '#0f1422', color: '#64748b', borderBottom: '1px solid #1a2234' }}>
+                          <th style={{ padding: '8px 12px', fontWeight: '500' }}>Title</th>
+                          <th style={{ padding: '8px 12px', fontWeight: '500' }}>Type</th>
+                          <th style={{ padding: '8px 12px', fontWeight: '500' }}>Flagged Video ID</th>
+                          <th style={{ padding: '8px 12px', fontWeight: '500' }}>Worker Node</th>
+                          <th style={{ padding: '8px 12px', fontWeight: '500' }}>Detected</th>
+                          <th style={{ padding: '8px 12px', fontWeight: '500' }}>Reason</th>
+                          <th style={{ padding: '8px 12px', fontWeight: '500' }}>Actions</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </div>
+                      </thead>
+                      <tbody>
+                        {takedowns.map((v, i) => (
+                          <tr key={v.id} style={{ borderBottom: i < takedowns.length - 1 ? '1px solid #1a2234' : 'none' }}>
+                            <td style={{ padding: '8px 12px', fontWeight: '500', color: '#f8fafc' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                {v.poster_url && (
+                                  <img
+                                    src={v.poster_url}
+                                    alt=""
+                                    style={{ width: '24px', height: '36px', objectFit: 'cover', borderRadius: '3px' }}
+                                  />
+                                )}
+                                <div>
+                                  <div>{v.title_name || `TMDB #${v.tmdb_id}`}</div>
+                                  {v.is_movie === 0 && (
+                                    <span style={{ fontSize: '10px', color: '#64748b' }}>
+                                      Season {v.season}, Episode {v.episode}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            </td>
+                            <td style={{ padding: '8px 12px' }}>
+                              <span style={{
+                                padding: '1px 5px',
+                                borderRadius: '3px',
+                                fontSize: '10px',
+                                fontWeight: '600',
+                                background: v.is_movie === 1 ? 'rgba(99,102,241,0.1)' : 'rgba(56,189,248,0.1)',
+                                color: v.is_movie === 1 ? '#a5b4fc' : '#38bdf8',
+                              }}>
+                                {v.is_movie === 1 ? 'MOVIE' : 'SERIES'}
+                              </span>
+                            </td>
+                            <td style={{ padding: '8px 12px', fontFamily: 'monospace' }}>
+                              {v.dm_video_id ? (
+                                <a
+                                  href={`https://www.dailymotion.com/video/${v.dm_video_id}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  style={{ color: '#f87171', textDecoration: 'none' }}
+                                >
+                                  {v.dm_video_id} ↗
+                                </a>
+                              ) : '—'}
+                            </td>
+                            <td style={{ padding: '8px 12px', color: '#94a3b8' }}>
+                              {v.account_label || (v.dm_account_id ? `#${v.dm_account_id}` : '—')}
+                            </td>
+                            <td style={{ padding: '8px 12px', color: '#64748b', fontSize: '11px' }}>
+                              {v.takedown_detected_at ? new Date(v.takedown_detected_at).toLocaleString() : 'Recently'}
+                            </td>
+                            <td style={{ padding: '8px 12px', color: '#fbbf24', fontSize: '11px' }}>
+                              {v.takedown_reason || 'Fingerprint Recognition Suspension'}
+                            </td>
+                            <td style={{ padding: '8px 12px' }}>
+                              <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                                {v.title_id && (
+                                  v.title_status === 'blacklisted' ? (
+                                    <button
+                                      onClick={() => handleUnblacklistTitle(v.title_id)}
+                                      title="Show is blacklisted. Click to unblock."
+                                      style={{
+                                        background: 'rgba(239, 68, 68, 0.15)',
+                                        border: '1px solid rgba(239, 68, 68, 0.3)',
+                                        color: '#f87171',
+                                        padding: '3px 8px',
+                                        borderRadius: '3px',
+                                        fontSize: '11px',
+                                        fontWeight: '600',
+                                        cursor: 'pointer',
+                                      }}
+                                    >
+                                      🚫 Blacklisted
+                                    </button>
+                                  ) : (
+                                    <button
+                                      onClick={() => handleBlacklistTitle(v.title_id)}
+                                      title="Completely stops all future episode uploads for this series"
+                                      style={{
+                                        background: 'rgba(239, 68, 68, 0.1)',
+                                        border: '1px solid rgba(239, 68, 68, 0.3)',
+                                        color: '#f87171',
+                                        padding: '3px 8px',
+                                        borderRadius: '3px',
+                                        fontSize: '11px',
+                                        fontWeight: '600',
+                                        cursor: 'pointer',
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: '3px',
+                                      }}
+                                    >
+                                      <Ban size={11} />
+                                      <span>Stop Show</span>
+                                    </button>
+                                  )
+                                )}
+                                <button
+                                  onClick={() => handleRequeueTakedown(v.id)}
+                                  title="Re-queues video to attempt upload from alternative release"
+                                  style={{
+                                    background: '#0284c7',
+                                    border: 'none',
+                                    color: '#ffffff',
+                                    padding: '3px 8px',
+                                    borderRadius: '3px',
+                                    fontSize: '11px',
+                                    fontWeight: '600',
+                                    cursor: 'pointer',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                  }}
+                                >
+                                  <RotateCcw size={11} />
+                                  <span>Re-upload Alt</span>
+                                </button>
+                                <button
+                                  onClick={() => handleDismissTakedown(v.id)}
+                                  title="Archive this takedown entry"
+                                  style={{
+                                    background: '#131d31',
+                                    border: '1px solid #1a2234',
+                                    color: '#94a3b8',
+                                    padding: '3px 8px',
+                                    borderRadius: '3px',
+                                    fontSize: '11px',
+                                    cursor: 'pointer',
+                                  }}
+                                >
+                                  Dismiss
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
 
-              {/* Recovery & Cooling-Off Period Notice */}
-              <div style={{
-                background: 'rgba(56, 189, 248, 0.05)',
-                border: '1px solid rgba(56, 189, 248, 0.18)',
-                borderRadius: '8px',
-                padding: '14px 18px',
-                display: 'flex',
-                gap: '12px',
-                alignItems: 'flex-start',
-              }}>
-                <Clock size={18} color="#38bdf8" style={{ marginTop: '2px', flexShrink: 0 }} />
-                <div style={{ fontSize: '12px', color: '#94a3b8', lineHeight: '1.6' }}>
-                  <div style={{ fontWeight: '600', color: '#f8fafc', marginBottom: '2px' }}>
-                    Worker Node Quarantine Recovery &amp; Cooling-Off Guidelines
-                  </div>
-                  <div>
-                    • <strong>Dailymotion Strike Expiry:</strong> Official automated fingerprint copyright warnings stay on a profile for <strong>6 months (180 days)</strong> before decaying.
-                  </div>
-                  <div>
-                    • <strong>Recommended Cooling-Off:</strong> Wait at least <strong>7 to 14 days</strong> before clicking <em>Reset Strikes &amp; Reactivate</em>. Rapid repeated uploads to a flagged channel risk permanent account ban.
-                  </div>
-                  <div>
-                    • <strong>Best Practice:</strong> Keep high-strike accounts dormant in quarantine and plug in a fresh, free worker node (e.g. <code>shreyash1442</code>) to immediately continue pipeline processing safely.
-                  </div>
-                </div>
+                    {renderPagination(
+                      takedownPage,
+                      takedownTotalPages,
+                      takedownTotal,
+                      takedownLimit,
+                      (p) => fetchTakedowns(p, takedownLimit),
+                      (l) => {
+                        setTakedownLimit(l);
+                        fetchTakedowns(1, l);
+                      },
+                      takedownsLoading
+                    )}
+                  </>
+                )}
               </div>
 
               {/* Swarm Worker Nodes Health & Strike Monitor */}
@@ -2079,11 +2660,10 @@ export default function Dashboard() {
                               color: isQuarantined ? '#f87171' : isWarning ? '#fbbf24' : '#34d399',
                               border: `1px solid ${isQuarantined ? 'rgba(239,68,68,0.3)' : isWarning ? 'rgba(245,158,11,0.3)' : 'rgba(16,185,129,0.3)'}`,
                             }}>
-                              {isQuarantined ? 'QUARANTINED (AUTO-SAFE)' : isWarning ? 'WARNING (1 STRIKE)' : 'HEALTHY'}
+                              {isQuarantined ? 'QUARANTINED' : isWarning ? 'WARNING (1 STRIKE)' : 'HEALTHY'}
                             </span>
                           </div>
 
-                          {/* Strike meter visual */}
                           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '6px', marginBottom: '8px' }}>
                             <span style={{ fontSize: '11px', color: '#94a3b8' }}>Strikes:</span>
                             <div style={{ display: 'flex', gap: '4px' }}>
@@ -2103,7 +2683,7 @@ export default function Dashboard() {
                         <div style={{ display: 'flex', gap: '6px', marginTop: '12px', paddingTop: '10px', borderTop: '1px solid #1a2234' }}>
                           <button
                             onClick={() => handleResetStrikes(acc.id)}
-                            title="Reset strike counter to 0 and re-enable this node for uploads"
+                            title="Reset strike counter to 0 and re-enable this node"
                             style={{
                               flex: 1,
                               background: '#1a2234',
@@ -2158,64 +2738,11 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              {/* Educational Anti-Ban & Account Protection Guide */}
-              <div style={{
-                background: '#0c101b',
-                border: '1px solid #1a2234',
-                borderRadius: '8px',
-                padding: '18px 20px',
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
-                  <ShieldCheck size={18} color="#38bdf8" />
-                  <div style={{ fontSize: '13px', fontWeight: '700', color: '#f8fafc' }}>
-                    How Our Swarm Shield Keeps Accounts Safe
-                  </div>
-                </div>
-
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '12px', marginTop: '12px' }}>
-                  <div style={{ background: '#131d31', padding: '12px', borderRadius: '6px', border: '1px solid #1a2234' }}>
-                    <div style={{ fontSize: '12px', fontWeight: '600', color: '#38bdf8', marginBottom: '4px' }}>
-                      1. Disposable Node Isolation
-                    </div>
-                    <div style={{ fontSize: '11px', color: '#94a3b8', lineHeight: '1.4' }}>
-                      Never use your main personal account as an upload node. Swarm worker drives act as isolated, disposable worker drives.
-                    </div>
-                  </div>
-
-                  <div style={{ background: '#131d31', padding: '12px', borderRadius: '6px', border: '1px solid #1a2234' }}>
-                    <div style={{ fontSize: '12px', fontWeight: '600', color: '#38bdf8', marginBottom: '4px' }}>
-                      2. Auto-Quarantine at 2 Strikes
-                    </div>
-                    <div style={{ fontSize: '11px', color: '#94a3b8', lineHeight: '1.4' }}>
-                      Dailymotion terminates accounts on 3 strikes. Our system automatically pauses worker nodes upon reaching 2 strikes, preventing channel loss.
-                    </div>
-                  </div>
-
-                  <div style={{ background: '#131d31', padding: '12px', borderRadius: '6px', border: '1px solid #1a2234' }}>
-                    <div style={{ fontSize: '12px', fontWeight: '600', color: '#38bdf8', marginBottom: '4px' }}>
-                      3. Metadata Obfuscation
-                    </div>
-                    <div style={{ fontSize: '11px', color: '#94a3b8', lineHeight: '1.4' }}>
-                      Video titles are strictly numerical identifiers (<code style={{ color: '#f8fafc' }}>tmdb-s-e</code>) marked private with zero copyrighted keywords.
-                    </div>
-                  </div>
-
-                  <div style={{ background: '#131d31', padding: '12px', borderRadius: '6px', border: '1px solid #1a2234' }}>
-                    <div style={{ fontSize: '12px', fontWeight: '600', color: '#38bdf8', marginBottom: '4px' }}>
-                      4. Alternative Release Switching
-                    </div>
-                    <div style={{ fontSize: '11px', color: '#94a3b8', lineHeight: '1.4' }}>
-                      When retrying flagged titles, the pipeline selects alternative release encodes (e.g. 720p/different GOP bitstreams) that differ from the flagged hash.
-                    </div>
-                  </div>
-                </div>
-              </div>
-
             </div>
           )}
 
           {/* ─────────────────────────────────────────────────────────
-              TAB 6: PIPELINE CONTROLS (CLEAN CARDS)
+              TAB 6: PIPELINE CONTROLS
           ────────────────────────────────────────────────────────── */}
           {activeTab === 'pipeline' && (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '14px' }}>
@@ -2448,8 +2975,8 @@ export default function Dashboard() {
           left: 0,
           width: '100vw',
           height: '100vh',
-          background: 'rgba(0,0,0,0.8)',
-          backdropFilter: 'blur(4px)',
+          background: 'rgba(0,0,0,0.85)',
+          backdropFilter: 'blur(5px)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -2461,14 +2988,19 @@ export default function Dashboard() {
             borderRadius: '10px',
             padding: '16px',
             width: '100%',
-            maxWidth: '640px',
+            maxWidth: '680px',
           }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
               <div>
-                <div style={{ fontWeight: '600', color: '#f8fafc' }}>
+                <div style={{ fontWeight: '600', color: '#f8fafc', fontSize: '14px' }}>
                   {previewVideo.title_name || `TMDB #${previewVideo.tmdb_id}`}
+                  {previewVideo.is_movie === 0 && (
+                    <span style={{ color: '#38bdf8', marginLeft: '6px', fontSize: '12px' }}>
+                      (S{previewVideo.season || 1} E{previewVideo.episode})
+                    </span>
+                  )}
                 </div>
-                <div style={{ fontSize: '11px', color: '#64748b' }}>ID: {previewVideo.dm_video_id}</div>
+                <div style={{ fontSize: '11px', color: '#64748b' }}>DM Video ID: <code>{previewVideo.dm_video_id}</code></div>
               </div>
               <button
                 onClick={() => setPreviewVideo(null)}
@@ -2485,7 +3017,7 @@ export default function Dashboard() {
               background: '#000',
               borderRadius: '6px',
               overflow: 'hidden',
-              marginBottom: '10px',
+              marginBottom: '12px',
             }}>
               <iframe
                 src={`https://geo.dailymotion.com/player.html?video=${previewVideo.dm_video_id}`}
@@ -2494,9 +3026,39 @@ export default function Dashboard() {
                 allowFullScreen
               />
             </div>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '11px', color: '#94a3b8' }}>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                {previewVideo.dm_video_id && (
+                  <a
+                    href={`https://www.dailymotion.com/video/${previewVideo.dm_video_id}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ color: '#38bdf8', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '3px' }}
+                  >
+                    <span>Open in Dailymotion Tab</span>
+                    <ExternalLink size={10} />
+                  </a>
+                )}
+              </div>
+              <button
+                onClick={() => setPreviewVideo(null)}
+                style={{
+                  background: '#131d31',
+                  border: '1px solid #1a2234',
+                  color: '#f8fafc',
+                  padding: '4px 10px',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                }}
+              >
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}
+
       {/* Floating Interactive Toast Feedback */}
       {toast && (
         <div style={{

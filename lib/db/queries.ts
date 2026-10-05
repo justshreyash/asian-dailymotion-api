@@ -116,6 +116,48 @@ export async function getAllTitles(options: { q?: string; status?: string; kind?
   return dbAll<TitleRow>(sql, params);
 }
 
+export async function getPaginatedTitles(options: {
+  q?: string;
+  status?: string;
+  kind?: string;
+  page?: number;
+  limit?: number;
+} = {}): Promise<{ titles: TitleRow[]; total: number; page: number; limit: number; totalPages: number }> {
+  const page = Math.max(1, options.page || 1);
+  const limit = Math.max(1, Math.min(100, options.limit || 20));
+  const offset = (page - 1) * limit;
+
+  let whereSql = ' WHERE 1=1';
+  const whereParams: any[] = [];
+
+  if (options.q) {
+    whereSql += ' AND (title LIKE ? OR slug LIKE ? OR tmdb_id LIKE ?)';
+    whereParams.push(`%${options.q}%`, `%${options.q}%`, `%${options.q}%`);
+  }
+  if (options.status && options.status !== 'all') {
+    whereSql += ' AND status = ?';
+    whereParams.push(options.status);
+  }
+  if (options.kind && options.kind !== 'all') {
+    whereSql += ' AND kind = ?';
+    whereParams.push(options.kind);
+  }
+
+  const countRow = await dbGet<{ total: number }>(`SELECT COUNT(*) as total FROM titles ${whereSql}`, whereParams);
+  const total = countRow?.total || 0;
+
+  const dataSql = `SELECT * FROM titles ${whereSql} ORDER BY id DESC LIMIT ? OFFSET ?`;
+  const titles = await dbAll<TitleRow>(dataSql, [...whereParams, limit, offset]);
+
+  return {
+    titles,
+    total,
+    page,
+    limit,
+    totalPages: Math.ceil(total / limit) || 1,
+  };
+}
+
 export async function updateTitleTmdb(
   id: number,
   tmdbId: number,
@@ -296,6 +338,68 @@ export async function getAllVideos(options: { q?: string; status?: string; limit
   return dbAll<VideoRow>(sql, params);
 }
 
+export async function getPaginatedVideos(options: {
+  q?: string;
+  status?: string;
+  kind?: string;
+  onlyUploaded?: boolean;
+  page?: number;
+  limit?: number;
+} = {}): Promise<{ videos: VideoRow[]; total: number; page: number; limit: number; totalPages: number }> {
+  const page = Math.max(1, options.page || 1);
+  const limit = Math.max(1, Math.min(100, options.limit || 20));
+  const offset = (page - 1) * limit;
+
+  let whereSql = ' WHERE 1=1';
+  const whereParams: any[] = [];
+
+  if (options.onlyUploaded) {
+    whereSql += " AND v.upload_status = 'uploaded' AND v.dm_video_id IS NOT NULL";
+  } else if (options.status && options.status !== 'all') {
+    whereSql += ' AND v.upload_status = ?';
+    whereParams.push(options.status);
+  }
+
+  if (options.kind === 'movie') {
+    whereSql += ' AND v.is_movie = 1';
+  } else if (options.kind === 'series') {
+    whereSql += ' AND v.is_movie = 0';
+  }
+
+  if (options.q) {
+    whereSql += ' AND (t.title LIKE ? OR v.dm_title LIKE ? OR v.dm_video_id LIKE ? OR v.tmdb_id LIKE ?)';
+    whereParams.push(`%${options.q}%`, `%${options.q}%`, `%${options.q}%`, `%${options.q}%`);
+  }
+
+  const countSql = `
+    SELECT COUNT(*) as total 
+    FROM videos v
+    LEFT JOIN titles t ON v.title_id = t.id
+    ${whereSql}
+  `;
+  const countRow = await dbGet<{ total: number }>(countSql, whereParams);
+  const total = countRow?.total || 0;
+
+  const dataSql = `
+    SELECT v.*, t.title as title_name, t.poster_url as poster_url, a.label as account_label
+    FROM videos v
+    LEFT JOIN titles t ON v.title_id = t.id
+    LEFT JOIN dm_accounts a ON v.dm_account_id = a.id
+    ${whereSql}
+    ORDER BY v.id DESC
+    LIMIT ? OFFSET ?
+  `;
+  const videos = await dbAll<VideoRow>(dataSql, [...whereParams, limit, offset]);
+
+  return {
+    videos,
+    total,
+    page,
+    limit,
+    totalPages: Math.ceil(total / limit) || 1,
+  };
+}
+
 export async function getTakedownVideos(limit = 100): Promise<VideoRow[]> {
   return dbAll<VideoRow>(`
     SELECT v.*, t.title as title_name, t.poster_url as poster_url, t.status as title_status, a.label as account_label
@@ -306,6 +410,36 @@ export async function getTakedownVideos(limit = 100): Promise<VideoRow[]> {
     ORDER BY v.id DESC
     LIMIT ?
   `, [limit]);
+}
+
+export async function getPaginatedTakedowns(options: {
+  page?: number;
+  limit?: number;
+} = {}): Promise<{ takedowns: VideoRow[]; total: number; page: number; limit: number; totalPages: number }> {
+  const page = Math.max(1, options.page || 1);
+  const limit = Math.max(1, Math.min(100, options.limit || 20));
+  const offset = (page - 1) * limit;
+
+  const countRow = await dbGet<{ total: number }>("SELECT COUNT(*) as total FROM videos WHERE upload_status = 'takedown'");
+  const total = countRow?.total || 0;
+
+  const takedowns = await dbAll<VideoRow>(`
+    SELECT v.*, t.title as title_name, t.poster_url as poster_url, t.status as title_status, a.label as account_label
+    FROM videos v
+    LEFT JOIN titles t ON v.title_id = t.id
+    LEFT JOIN dm_accounts a ON v.dm_account_id = a.id
+    WHERE v.upload_status = 'takedown'
+    ORDER BY v.id DESC
+    LIMIT ? OFFSET ?
+  `, [limit, offset]);
+
+  return {
+    takedowns,
+    total,
+    page,
+    limit,
+    totalPages: Math.ceil(total / limit) || 1,
+  };
 }
 
 export async function getUploadedVideos(limit = 500): Promise<VideoRow[]> {
@@ -647,22 +781,68 @@ export async function deactivateDmAccount(id: number): Promise<void> {
 
 export async function getStats(): Promise<{
   totalTitles: number;
+  tmdbMatchedTitles: number;
   totalVideos: number;
   uploadedVideos: number;
   pendingVideos: number;
   takedownVideos: number;
   failedVideos: number;
+  holdVideos: number;
+  totalStorageMb: number;
   activeAccounts: number;
   quarantinedAccounts: number;
 }> {
-  const totalTitles = ((await dbGet<{ c: number }>('SELECT COUNT(*) as c FROM titles'))?.c) || 0;
-  const totalVideos = ((await dbGet<{ c: number }>('SELECT COUNT(*) as c FROM videos'))?.c) || 0;
-  const uploadedVideos = ((await dbGet<{ c: number }>("SELECT COUNT(*) as c FROM videos WHERE upload_status = 'uploaded'"))?.c) || 0;
-  const pendingVideos = ((await dbGet<{ c: number }>("SELECT COUNT(*) as c FROM videos WHERE upload_status = 'pending'"))?.c) || 0;
-  const takedownVideos = ((await dbGet<{ c: number }>("SELECT COUNT(*) as c FROM videos WHERE upload_status = 'takedown'"))?.c) || 0;
-  const failedVideos = ((await dbGet<{ c: number }>("SELECT COUNT(*) as c FROM videos WHERE upload_status = 'failed'"))?.c) || 0;
-  const activeAccounts = ((await dbGet<{ c: number }>('SELECT COUNT(*) as c FROM dm_accounts WHERE is_active = 1'))?.c) || 0;
-  const quarantinedAccounts = ((await dbGet<{ c: number }>("SELECT COUNT(*) as c FROM dm_accounts WHERE is_active = 0"))?.c) || 0;
+  const [vidStats, titleStats, accStats] = await Promise.all([
+    dbGet<{
+      totalVideos: number;
+      uploadedVideos: number;
+      pendingVideos: number;
+      takedownVideos: number;
+      failedVideos: number;
+      holdVideos: number;
+      totalStorageMb: number;
+    }>(`
+      SELECT 
+        COUNT(*) as totalVideos,
+        COALESCE(SUM(CASE WHEN upload_status = 'uploaded' THEN 1 ELSE 0 END), 0) as uploadedVideos,
+        COALESCE(SUM(CASE WHEN upload_status = 'pending' THEN 1 ELSE 0 END), 0) as pendingVideos,
+        COALESCE(SUM(CASE WHEN upload_status = 'takedown' THEN 1 ELSE 0 END), 0) as takedownVideos,
+        COALESCE(SUM(CASE WHEN upload_status = 'failed' THEN 1 ELSE 0 END), 0) as failedVideos,
+        COALESCE(SUM(CASE WHEN upload_status = 'on_hold' THEN 1 ELSE 0 END), 0) as holdVideos,
+        COALESCE(SUM(CASE WHEN upload_status = 'uploaded' THEN COALESCE(file_size_mb, 1100) ELSE 0 END), 0) as totalStorageMb
+      FROM videos
+    `),
+    dbGet<{
+      totalTitles: number;
+      tmdbMatchedTitles: number;
+    }>(`
+      SELECT
+        COUNT(*) as totalTitles,
+        COALESCE(SUM(CASE WHEN tmdb_id IS NOT NULL THEN 1 ELSE 0 END), 0) as tmdbMatchedTitles
+      FROM titles
+    `),
+    dbGet<{
+      activeAccounts: number;
+      quarantinedAccounts: number;
+    }>(`
+      SELECT
+        COALESCE(SUM(CASE WHEN is_active = 1 AND COALESCE(status, 'active') != 'quarantined' THEN 1 ELSE 0 END), 0) as activeAccounts,
+        COALESCE(SUM(CASE WHEN is_active = 0 OR status = 'quarantined' THEN 1 ELSE 0 END), 0) as quarantinedAccounts
+      FROM dm_accounts
+    `),
+  ]);
 
-  return { totalTitles, totalVideos, uploadedVideos, pendingVideos, takedownVideos, failedVideos, activeAccounts, quarantinedAccounts };
+  return {
+    totalTitles: Number(titleStats?.totalTitles) || 0,
+    tmdbMatchedTitles: Number(titleStats?.tmdbMatchedTitles) || 0,
+    totalVideos: Number(vidStats?.totalVideos) || 0,
+    uploadedVideos: Number(vidStats?.uploadedVideos) || 0,
+    pendingVideos: Number(vidStats?.pendingVideos) || 0,
+    takedownVideos: Number(vidStats?.takedownVideos) || 0,
+    failedVideos: Number(vidStats?.failedVideos) || 0,
+    holdVideos: Number(vidStats?.holdVideos) || 0,
+    totalStorageMb: Number(vidStats?.totalStorageMb) || 0,
+    activeAccounts: Number(accStats?.activeAccounts) || 0,
+    quarantinedAccounts: Number(accStats?.quarantinedAccounts) || 0,
+  };
 }
