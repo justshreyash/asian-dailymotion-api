@@ -137,6 +137,15 @@ export default function Dashboard() {
       .catch(() => {});
   }, []);
 
+  // Periodic polling every 15s to update live metrics automatically when cron runs
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const timer = setInterval(() => {
+      fetchData();
+    }, 15000);
+    return () => clearInterval(timer);
+  }, [isAuthenticated]);
+
   const handleLogin = async (e?: React.FormEvent | React.MouseEvent | React.KeyboardEvent) => {
     if (e) {
       e.preventDefault();
