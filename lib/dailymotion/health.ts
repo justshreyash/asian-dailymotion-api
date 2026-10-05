@@ -8,7 +8,8 @@
  * - Auto-quarantines worker nodes that reach threshold strikes to protect account health
  */
 
-import { getUploadedVideos, markVideoTakedown, getAllDmAccounts, type VideoRow } from '../db/queries';
+import { getUploadedVideos, markVideoTakedown, markVideoEncodingError, getAllDmAccounts, type VideoRow } from '../db/queries';
+import { DmSwarm } from './swarm';
 
 export interface VideoHealthResult {
   videoId: string;
@@ -16,6 +17,8 @@ export interface VideoHealthResult {
   status?: string;
   reason?: string;
   statusCode?: number;
+  isEncodingError?: boolean;
+  isTakedown?: boolean;
   skipped?: boolean;
 }
 
@@ -23,6 +26,7 @@ export interface SwarmHealthScanSummary {
   totalChecked: number;
   aliveCount: number;
   takedownCount: number;
+  encodingErrorCount: number;
   quarantinedAccounts: number;
   takedowns: Array<{
     id: number;
@@ -34,14 +38,22 @@ export interface SwarmHealthScanSummary {
     accountLabel?: string;
     reason: string;
   }>;
+  healedErrors: Array<{
+    id: number;
+    titleName?: string;
+    tmdbId: number;
+    season: number | null;
+    episode: number | null;
+    dmVideoId: string;
+    reason: string;
+  }>;
 }
 
 /**
  * Check health of a single Dailymotion video ID using public API endpoint
  */
 export async function checkDmVideoHealth(videoId: string): Promise<VideoHealthResult> {
-  const cleanId = videoId.replace(/^k/, ''); // Handle both private hash or direct ID
-  const url = `https://api.dailymotion.com/video/${cleanId}?fields=id,title,status,private`;
+  const url = `https://api.dailymotion.com/video/${videoId}?fields=id,title,status,encoding_progress,publishing_progress,available_formats,published,private`;
 
   try {
     const controller = new AbortController();
@@ -62,27 +74,54 @@ export async function checkDmVideoHealth(videoId: string): Promise<VideoHealthRe
       return {
         videoId,
         alive: false,
+        isTakedown: true,
         statusCode: 404,
         reason: data?.error?.message || 'Video suspended or deleted by Dailymotion fingerprint scanner',
       };
     }
 
-    // 2. Status indicates deletion / suspension
+    // 2. Encoding failure (e.g. unsupported codec like AV1 or corrupted stream)
+    if (
+      data?.status === 'encoding_error' ||
+      data?.encoding_progress === -1 ||
+      (data?.published === false && Array.isArray(data?.available_formats) && data.available_formats.length === 0 && data?.status !== 'processing')
+    ) {
+      return {
+        videoId,
+        alive: false,
+        isEncodingError: true,
+        statusCode: res.status,
+        reason: 'Dailymotion encoding error (unsupported codec or corrupted stream container)',
+      };
+    }
+
+    // 3. Status indicates deletion / moderation suspension
     if (data && (data.status === 'deleted' || data.status === 'suspended' || data.status === 'rejected')) {
       return {
         videoId,
         alive: false,
+        isTakedown: true,
         statusCode: res.status,
         reason: `Video status is '${data.status}'`,
       };
     }
 
-    // 3. Alive & reachable
-    if (res.ok && data?.id) {
+    // 4. Processing / encoding in progress
+    if (data?.status === 'processing' || (data?.encoding_progress != null && data.encoding_progress >= 0 && data.encoding_progress < 100)) {
       return {
         videoId,
         alive: true,
-        status: data.status || 'ready',
+        status: 'processing',
+        statusCode: res.status,
+      };
+    }
+
+    // 5. Alive & published / ready
+    if (res.ok && data?.id && (data.status === 'ready' || data.status === 'published' || data.published === true || (Array.isArray(data.available_formats) && data.available_formats.length > 0))) {
+      return {
+        videoId,
+        alive: true,
+        status: data.status || 'published',
         statusCode: res.status,
       };
     }
@@ -95,6 +134,7 @@ export async function checkDmVideoHealth(videoId: string): Promise<VideoHealthRe
     return {
       videoId,
       alive: false,
+      isTakedown: true,
       statusCode: res.status,
       reason: data?.error?.message || `HTTP ${res.status} response from Dailymotion`,
     };
@@ -111,14 +151,18 @@ export async function checkDmVideoHealth(videoId: string): Promise<VideoHealthRe
 
 /**
  * Run a full or batch health scan across all uploaded videos in the swarm.
+ * Automatically purges corrupted/encoding-error videos on Dailymotion and resets them in DB for alternative clean uploads.
  */
 export async function scanAllSwarmVideosHealth(options: { maxCheck?: number } = {}): Promise<SwarmHealthScanSummary> {
   const maxCheck = options.maxCheck || 200;
   const videos = await getUploadedVideos(maxCheck);
+  const swarm = new DmSwarm();
 
   let aliveCount = 0;
   let takedownCount = 0;
+  let encodingErrorCount = 0;
   const takedowns: SwarmHealthScanSummary['takedowns'] = [];
+  const healedErrors: SwarmHealthScanSummary['healedErrors'] = [];
 
   console.log(`\n🩺 Starting Dailymotion Swarm Video Health Check for ${videos.length} videos...`);
 
@@ -134,12 +178,37 @@ export async function scanAllSwarmVideosHealth(options: { maxCheck?: number } = 
 
       if (health.alive) {
         aliveCount++;
+      } else if (health.isEncodingError) {
+        encodingErrorCount++;
+        const reason = health.reason || 'Dailymotion encoding error';
+        console.warn(`  ⚠️ ENCODING ERROR DETECTED: [${v.dm_video_id}] "${v.title_name || v.dm_title}" (Account #${v.dm_account_id}) -> Auto-purging from DM and resetting to pending for clean re-upload.`);
+        
+        // 1. Delete corrupted video from DM
+        await swarm.deleteVideo(v.dm_video_id, v.dm_account_id);
+
+        // 2. Reset in DB & flag source URL so alternative release will be chosen
+        await markVideoEncodingError(v.id, reason);
+
+        healedErrors.push({
+          id: v.id,
+          titleName: v.title_name,
+          tmdbId: v.tmdb_id,
+          season: v.season,
+          episode: v.episode,
+          dmVideoId: v.dm_video_id,
+          reason,
+        });
       } else {
         takedownCount++;
         const reason = health.reason || 'Flagged by Dailymotion Automated Fingerprint Recognition';
         console.warn(`  🚨 TAKEDOWN DETECTED: [${v.dm_video_id}] "${v.title_name || v.dm_title}" (Account #${v.dm_account_id}) -> ${reason}`);
         
+        // 1. Delete from DM if still accessible
+        await swarm.deleteVideo(v.dm_video_id, v.dm_account_id);
+
+        // 2. Mark takedown in DB
         await markVideoTakedown(v.id, reason);
+
         takedowns.push({
           id: v.id,
           titleName: v.title_name,
@@ -161,13 +230,16 @@ export async function scanAllSwarmVideosHealth(options: { maxCheck?: number } = 
   const allAccounts = await getAllDmAccounts();
   const quarantinedAccounts = allAccounts.filter(a => a.status === 'quarantined' || a.strike_count >= 2).length;
 
-  console.log(`🩺 Health Scan Complete: ${aliveCount} Healthy, ${takedownCount} Takedowns Detected, ${quarantinedAccounts} Quarantined Nodes.\n`);
+  console.log(`🩺 Health Scan Complete: ${aliveCount} Healthy, ${encodingErrorCount} Encoding Errors Auto-Healed, ${takedownCount} Takedowns Handled, ${quarantinedAccounts} Quarantined Nodes.\n`);
 
   return {
     totalChecked: videos.length,
     aliveCount,
     takedownCount,
+    encodingErrorCount,
     quarantinedAccounts,
     takedowns,
+    healedErrors,
   };
 }
+

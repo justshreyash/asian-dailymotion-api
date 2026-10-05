@@ -12,6 +12,7 @@
 
 import {
   getActiveDmAccounts,
+  getAllDmAccounts,
   updateDmAccountToken,
   incrementDmAccountUpload,
   deactivateDmAccount,
@@ -19,7 +20,7 @@ import {
   DAILY_DURATION_LIMIT_SECONDS,
   type DmAccountRow,
 } from '../db/queries';
-import { getDmAccessToken, uploadVideoByUrl, type DmUploadResult } from './client';
+import { getDmAccessToken, uploadVideoByUrl, deleteDmVideo, type DmUploadResult } from './client';
 
 export interface SwarmUploadResult {
   success: boolean;
@@ -168,8 +169,15 @@ export class DmSwarm {
           };
         }
 
-        // If Dailymotion rejects the remote stream URL itself, skip trying other accounts on the identical bad URL
-        if (result.error?.includes('upload_limit_exceeded') || result.error?.includes('403')) {
+        // If this specific account reached its hourly/daily upload rate limit, put it on cooldown and try next node
+        if (result.error?.includes('upload_limit_exceeded') || result.error?.includes('slow down') || result.error?.includes('429')) {
+          console.log(`  ⚠️ Account "${account.label}" rate-limited ("${result.error}"). Setting 1-hour cooldown and rotating to next swarm node...`);
+          nodeCooldowns.set(account.id, Date.now() + 60 * 60 * 1000);
+          continue;
+        }
+
+        // If Dailymotion explicitly rejects the remote stream URL parameter itself, skip trying other accounts on the identical bad URL
+        if (result.error?.includes('cannot_download_url') || result.error?.includes('invalid_url') || result.error?.includes('url_not_found')) {
           console.log(`  ⚠️ URL rejected by Dailymotion ingest bot ("${result.error}"). Skipping this stream URL.`);
           return { success: false, error: `Remote stream URL rejected: ${result.error}` };
         }
@@ -213,6 +221,38 @@ export class DmSwarm {
   }
 
   /**
+   * Delete a video from Dailymotion using the owning account's token (or trying active accounts).
+   */
+  async deleteVideo(videoId: string, accountId?: number | null): Promise<boolean> {
+    const allAccounts = await getAllDmAccounts();
+    let accountsToTry: DmAccountRow[] = [];
+
+    if (accountId) {
+      const specific = allAccounts.find(a => a.id === accountId);
+      if (specific) accountsToTry.push(specific);
+    }
+    for (const acc of allAccounts) {
+      if (!accountsToTry.some(a => a.id === acc.id)) {
+        accountsToTry.push(acc);
+      }
+    }
+
+    for (const account of accountsToTry) {
+      try {
+        const token = await this.ensureToken(account);
+        const deleted = await deleteDmVideo(token, videoId);
+        if (deleted) {
+          console.log(`  🗑️ Successfully deleted DM video "${videoId}" via account "${account.label}"`);
+          return true;
+        }
+      } catch (e) {
+        // continue trying
+      }
+    }
+    return false;
+  }
+
+  /**
    * Get swarm status summary with daily counts and hours.
    */
   async getStatus(): Promise<{ active: number; accounts: { label: string; daily: number; dailyHours: string; maxDaily: number; maxHours: string; total: number; active: boolean }[] }> {
@@ -231,4 +271,5 @@ export class DmSwarm {
     };
   }
 }
+
 

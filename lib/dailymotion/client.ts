@@ -211,15 +211,75 @@ export async function uploadVideoByUrl(
   };
 }
 
+async function resilientDelete(urlStr: string, headers: Record<string, string>, retries = 3): Promise<any> {
+  const url = new URL(urlStr);
+  let lastErr: Error | null = null;
+
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const res = await httpsRequest({
+        hostname: url.hostname,
+        path: url.pathname + url.search,
+        method: 'DELETE',
+        headers,
+      });
+
+      if (res.status === 200 || res.status === 204 || res.status === 404) {
+        return { success: true, status: res.status };
+      }
+
+      if (res.status >= 400 && res.status !== 401 && res.status !== 403 && res.status !== 429) {
+        throw new Error(`HTTP ${res.status}: ${res.data}`);
+      }
+
+      return { success: false, status: res.status, text: res.data };
+    } catch (e) {
+      lastErr = e as Error;
+      if (attempt < retries) await new Promise(r => setTimeout(r, attempt * 500));
+    }
+  }
+  throw lastErr || new Error(`Failed to DELETE ${urlStr}`);
+}
+
 /**
- * Check if a Dailymotion video exists and its processing status.
+ * Check if a Dailymotion video exists and its processing/encoding status.
  */
 export async function checkVideoStatus(
   accessToken: string,
   videoId: string,
-): Promise<{ status: string; title: string; private_id?: string; url?: string; embed_url?: string; duration?: number } | null> {
+): Promise<{
+  id?: string;
+  status: string;
+  title?: string;
+  private_id?: string;
+  url?: string;
+  embed_url?: string;
+  duration?: number;
+  encoding_progress?: number;
+  publishing_progress?: number;
+  available_formats?: string[];
+  published?: boolean;
+  private?: boolean;
+} | null> {
   return resilientGet(
-    `https://partner.api.dailymotion.com/rest/video/${videoId}?fields=status,title,private_id,url,embed_url,duration`,
+    `https://partner.api.dailymotion.com/rest/video/${videoId}?fields=id,status,title,private_id,url,embed_url,duration,encoding_progress,publishing_progress,available_formats,published,private`,
     { Authorization: `Bearer ${accessToken}` }
   );
 }
+
+/**
+ * Delete a video from Dailymotion by video ID or private hash.
+ */
+export async function deleteDmVideo(accessToken: string, videoId: string): Promise<boolean> {
+  try {
+    const res = await resilientDelete(
+      `https://partner.api.dailymotion.com/rest/video/${videoId}`,
+      { Authorization: `Bearer ${accessToken}` }
+    );
+    return Boolean(res?.success);
+  } catch (err) {
+    console.warn(`Failed to delete DM video ${videoId}:`, (err as Error).message);
+    return false;
+  }
+}
+

@@ -74,7 +74,15 @@ async function isValidDirectStreamUrl(url: string): Promise<boolean> {
 
     if (resp.status >= 400) return false;
     const cType = (resp.headers.get('content-type') || '').toLowerCase();
-    if (cType.includes('text/html')) return false;
+    if (cType.includes('text/html') || cType.includes('text/plain')) return false;
+
+    const disposition = (resp.headers.get('content-disposition') || '').toLowerCase();
+    // Reject AV1 streams because Dailymotion remote upload cannot transcode them
+    if (disposition.includes('.av1.') || disposition.includes('av01') || disposition.includes('-av1') || disposition.includes('.av1-')) {
+      console.log(`    ⚠️ Detected AV1 codec in stream header ("${disposition}"). Skipping for DM compatibility.`);
+      return false;
+    }
+
     return true;
   } catch {
     return false;

@@ -34,9 +34,16 @@ export function selectBestReleases(
   const excludeSizes = options.excludeSizesMb || [];
   const excludeKeywords = (options.excludeKeywords || []).map(k => k.toLowerCase());
 
-  // Filter out invalid, oversized, or excluded releases
+  // Filter out invalid, oversized, unsupported codecs (AV1), or excluded releases
   const filtered = releases.filter(r => {
     if (r.sizeMb && r.sizeMb > MAX_FILE_SIZE_MB) return false;
+
+    const lowerTitle = (r.releaseTitle || '').toLowerCase();
+
+    // Dailymotion transcoders do NOT support raw AV1 in MKV/MP4 containers and fail with encoding_error
+    if (lowerTitle.includes('av1') || lowerTitle.includes('av01') || lowerTitle.includes('.av1.')) {
+      return false;
+    }
 
     // Check size exclusion (within 10MB tolerance of a flagged release)
     if (r.sizeMb && excludeSizes.some(s => Math.abs(s - r.sizeMb!) < 10)) {
@@ -45,7 +52,6 @@ export function selectBestReleases(
 
     // Check keyword exclusion in title
     if (excludeKeywords.length > 0) {
-      const lowerTitle = r.releaseTitle.toLowerCase();
       if (excludeKeywords.some(k => lowerTitle.includes(k))) return false;
     }
 

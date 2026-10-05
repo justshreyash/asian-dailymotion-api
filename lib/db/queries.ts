@@ -496,6 +496,47 @@ export async function markVideoTakedown(id: number, reason = 'Flagged by Dailymo
   }
 }
 
+export async function markVideoEncodingError(id: number, reason = 'Dailymotion encoding error (unsupported codec or corrupted stream)'): Promise<void> {
+  const video = await dbGet<VideoRow>('SELECT * FROM videos WHERE id = ?', [id]);
+  const now = new Date().toISOString();
+
+  let flaggedSources: any[] = [];
+  try {
+    flaggedSources = JSON.parse(video?.flagged_sources || '[]');
+  } catch {}
+
+  if (video?.source_url && !flaggedSources.some(f => f.url === video.source_url)) {
+    flaggedSources.push({
+      url: video.source_url,
+      sizeMb: video.file_size_mb,
+      resolution: video.resolution,
+      reason,
+      flaggedAt: now,
+    });
+  }
+
+  await dbRun(`
+    UPDATE videos SET
+      upload_status = 'pending',
+      dm_account_id = NULL,
+      dm_video_id = NULL,
+      dm_video_url = NULL,
+      source_url = NULL,
+      flagged_sources = ?,
+      error_message = ?,
+      updated_at = datetime('now')
+    WHERE id = ?
+  `, [JSON.stringify(flaggedSources), reason, id]);
+
+  // Ensure parent title is kept/restored to 'processing' (not blacklisted!) so the pipeline picks up a clean alternative release
+  if (video && video.title_id) {
+    const parentTitle = await dbGet<{ status: string }>('SELECT status FROM titles WHERE id = ?', [video.title_id]);
+    if (parentTitle && parentTitle.status !== 'blacklisted') {
+      await dbRun("UPDATE titles SET status = 'processing', updated_at = datetime('now') WHERE id = ?", [video.title_id]);
+    }
+  }
+}
+
 export async function blacklistTitle(id: number): Promise<void> {
   await dbRun("UPDATE titles SET status = 'blacklisted', updated_at = datetime('now') WHERE id = ?", [id]);
 }
