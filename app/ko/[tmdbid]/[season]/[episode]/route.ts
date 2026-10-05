@@ -21,6 +21,21 @@ export async function GET(
   const title = await getTitleByTmdbId(tmdbId);
   const video = await getVideoByLookup(tmdbId, season, episode);
 
+  // Blacklist check: halt all requests for blacklisted titles
+  if (title?.status === 'blacklisted') {
+    return NextResponse.json({
+      tmdb_id: tmdbId,
+      title: title.title,
+      season,
+      episode,
+      status: 'blacklisted',
+      message: 'This title is blacklisted from automated uploads to protect worker channels from copyright strikes.',
+      dm_video_id: null,
+      dm_video_url: null,
+      dm_embed_url: null,
+    }, { status: 403 });
+  }
+
   // 1. Video is already uploaded and ready
   if (video && video.upload_status === 'uploaded' && video.dm_video_id) {
     return NextResponse.json({

@@ -296,7 +296,7 @@ export async function getAllVideos(options: { q?: string; status?: string; limit
 
 export async function getTakedownVideos(limit = 100): Promise<VideoRow[]> {
   return dbAll<VideoRow>(`
-    SELECT v.*, t.title as title_name, t.poster_url as poster_url, a.label as account_label
+    SELECT v.*, t.title as title_name, t.poster_url as poster_url, t.status as title_status, a.label as account_label
     FROM videos v
     LEFT JOIN titles t ON v.title_id = t.id
     LEFT JOIN dm_accounts a ON v.dm_account_id = a.id
@@ -336,6 +336,20 @@ export async function markVideoTakedown(id: number, reason = 'Flagged by Dailymo
   if (video && video.dm_account_id) {
     await incrementAccountStrike(video.dm_account_id, reason);
   }
+
+  // Automatically blacklist parent title to halt future episode uploads and prevent recurring strikes
+  if (video && video.title_id) {
+    await dbRun("UPDATE titles SET status = 'blacklisted', updated_at = datetime('now') WHERE id = ?", [video.title_id]);
+    console.warn(`🛑 Auto-blacklisted Title #${video.title_id} to halt all future episode uploads.`);
+  }
+}
+
+export async function blacklistTitle(id: number): Promise<void> {
+  await dbRun("UPDATE titles SET status = 'blacklisted', updated_at = datetime('now') WHERE id = ?", [id]);
+}
+
+export async function unblacklistTitle(id: number): Promise<void> {
+  await dbRun("UPDATE titles SET status = 'discovered', updated_at = datetime('now') WHERE id = ?", [id]);
 }
 
 export async function requeueTakedownVideo(id: number): Promise<void> {

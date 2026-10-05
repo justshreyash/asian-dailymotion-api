@@ -29,6 +29,8 @@ import {
   AlertTriangle,
   Radio,
   Zap,
+  Ban,
+  Clock,
 } from 'lucide-react';
 import {
   AreaChart,
@@ -98,6 +100,7 @@ interface VideoFile {
   takedown_reason?: string | null;
   poster_url?: string | null;
   title_name?: string;
+  title_status?: string;
   account_label?: string;
   created_at: string;
 }
@@ -337,6 +340,40 @@ export default function Dashboard() {
       }
     } catch (err) {
       console.error('Reactivate failed:', err);
+    }
+  };
+
+  const handleBlacklistTitle = async (titleId: number) => {
+    try {
+      const res = await fetch('/api/admin/takedowns', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ action: 'blacklist_title', titleId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        fetchData();
+      }
+    } catch (err) {
+      console.error('Blacklist title failed:', err);
+    }
+  };
+
+  const handleUnblacklistTitle = async (titleId: number) => {
+    try {
+      const res = await fetch('/api/admin/takedowns', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ action: 'unblacklist_title', titleId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        fetchData();
+      }
+    } catch (err) {
+      console.error('Unblacklist title failed:', err);
     }
   };
 
@@ -1287,6 +1324,7 @@ export default function Dashboard() {
                       <th style={{ padding: '8px 12px', fontWeight: '500' }}>TMDB ID</th>
                       <th style={{ padding: '8px 12px', fontWeight: '500' }}>Episodes</th>
                       <th style={{ padding: '8px 12px', fontWeight: '500' }}>Status</th>
+                      <th style={{ padding: '8px 12px', fontWeight: '500' }}>Action</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1351,11 +1389,52 @@ export default function Dashboard() {
                             borderRadius: '3px',
                             fontSize: '10px',
                             fontWeight: '600',
-                            background: item.status === 'completed' ? 'rgba(16,185,129,0.1)' : item.is_on_air === 1 ? 'rgba(245,158,11,0.1)' : '#131d31',
-                            color: item.status === 'completed' ? '#34d399' : item.is_on_air === 1 ? '#f59e0b' : '#94a3b8',
+                            background: item.status === 'blacklisted' ? 'rgba(239,68,68,0.15)' : item.status === 'completed' ? 'rgba(16,185,129,0.1)' : item.is_on_air === 1 ? 'rgba(245,158,11,0.1)' : '#131d31',
+                            color: item.status === 'blacklisted' ? '#f87171' : item.status === 'completed' ? '#34d399' : item.is_on_air === 1 ? '#f59e0b' : '#94a3b8',
+                            border: item.status === 'blacklisted' ? '1px solid rgba(239,68,68,0.3)' : 'none',
                           }}>
-                            {item.is_on_air === 1 && item.status !== 'completed' ? 'ON-AIR' : item.status.toUpperCase()}
+                            {item.status === 'blacklisted' ? '🚫 BLACKLISTED' : (item.is_on_air === 1 && item.status !== 'completed' ? 'ON-AIR' : item.status.toUpperCase())}
                           </span>
+                        </td>
+                        <td style={{ padding: '8px 12px' }}>
+                          {item.status === 'blacklisted' ? (
+                            <button
+                              onClick={() => handleUnblacklistTitle(item.id)}
+                              title="Restore show to discovered state to resume scraping & uploading"
+                              style={{
+                                background: '#131d31',
+                                border: '1px solid #1a2234',
+                                color: '#34d399',
+                                padding: '3px 8px',
+                                borderRadius: '3px',
+                                fontSize: '11px',
+                                fontWeight: '600',
+                                cursor: 'pointer',
+                              }}
+                            >
+                              Unblock
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => handleBlacklistTitle(item.id)}
+                              title="Blacklist this show: completely halts all future episode scraping and uploads to prevent strikes"
+                              style={{
+                                background: 'rgba(239,68,68,0.08)',
+                                border: '1px solid rgba(239,68,68,0.2)',
+                                color: '#f87171',
+                                padding: '3px 8px',
+                                borderRadius: '3px',
+                                fontSize: '11px',
+                                cursor: 'pointer',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '3px',
+                              }}
+                            >
+                              <Ban size={11} />
+                              <span>Blacklist</span>
+                            </button>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -1737,7 +1816,48 @@ export default function Dashboard() {
                             {v.takedown_reason || 'Fingerprint Recognition Suspension'}
                           </td>
                           <td style={{ padding: '8px 12px' }}>
-                            <div style={{ display: 'flex', gap: '6px' }}>
+                            <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                              {v.title_id && (
+                                v.title_status === 'blacklisted' ? (
+                                  <button
+                                    onClick={() => handleUnblacklistTitle(v.title_id)}
+                                    title="Show is blacklisted. Click to unblock."
+                                    style={{
+                                      background: 'rgba(239, 68, 68, 0.15)',
+                                      border: '1px solid rgba(239, 68, 68, 0.3)',
+                                      color: '#f87171',
+                                      padding: '3px 8px',
+                                      borderRadius: '3px',
+                                      fontSize: '11px',
+                                      fontWeight: '600',
+                                      cursor: 'pointer',
+                                    }}
+                                  >
+                                    🚫 Blacklisted
+                                  </button>
+                                ) : (
+                                  <button
+                                    onClick={() => handleBlacklistTitle(v.title_id)}
+                                    title="Completely stops all future episode uploads for this series to prevent strikes"
+                                    style={{
+                                      background: 'rgba(239, 68, 68, 0.1)',
+                                      border: '1px solid rgba(239, 68, 68, 0.3)',
+                                      color: '#f87171',
+                                      padding: '3px 8px',
+                                      borderRadius: '3px',
+                                      fontSize: '11px',
+                                      fontWeight: '600',
+                                      cursor: 'pointer',
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      gap: '3px',
+                                    }}
+                                  >
+                                    <Ban size={11} />
+                                    <span>Stop Show</span>
+                                  </button>
+                                )
+                              )}
                               <button
                                 onClick={() => handleRequeueTakedown(v.id)}
                                 title="Re-queues video to attempt upload from alternative release/encode onto clean node"
@@ -1780,6 +1900,33 @@ export default function Dashboard() {
                     </tbody>
                   </table>
                 )}
+              </div>
+
+              {/* Recovery & Cooling-Off Period Notice */}
+              <div style={{
+                background: 'rgba(56, 189, 248, 0.05)',
+                border: '1px solid rgba(56, 189, 248, 0.18)',
+                borderRadius: '8px',
+                padding: '14px 18px',
+                display: 'flex',
+                gap: '12px',
+                alignItems: 'flex-start',
+              }}>
+                <Clock size={18} color="#38bdf8" style={{ marginTop: '2px', flexShrink: 0 }} />
+                <div style={{ fontSize: '12px', color: '#94a3b8', lineHeight: '1.6' }}>
+                  <div style={{ fontWeight: '600', color: '#f8fafc', marginBottom: '2px' }}>
+                    Worker Node Quarantine Recovery &amp; Cooling-Off Guidelines
+                  </div>
+                  <div>
+                    • <strong>Dailymotion Strike Expiry:</strong> Official automated fingerprint copyright warnings stay on a profile for <strong>6 months (180 days)</strong> before decaying.
+                  </div>
+                  <div>
+                    • <strong>Recommended Cooling-Off:</strong> Wait at least <strong>7 to 14 days</strong> before clicking <em>Reset Strikes &amp; Reactivate</em>. Rapid repeated uploads to a flagged channel risk permanent account ban.
+                  </div>
+                  <div>
+                    • <strong>Best Practice:</strong> Keep high-strike accounts dormant in quarantine and plug in a fresh, free worker node (e.g. <code>shreyash1442</code>) to immediately continue pipeline processing safely.
+                  </div>
+                </div>
               </div>
 
               {/* Swarm Worker Nodes Health & Strike Monitor */}

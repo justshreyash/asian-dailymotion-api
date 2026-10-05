@@ -8,6 +8,8 @@ import {
   resetAccountStrikes,
   quarantineDmAccount,
   reactivateDmAccount,
+  blacklistTitle,
+  unblacklistTitle,
 } from '@/lib/db/queries';
 import { scanAllSwarmVideosHealth } from '@/lib/dailymotion/health';
 import { verifyAdminRequest } from '@/lib/auth';
@@ -49,7 +51,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json();
-    const { action, videoId, accountId } = body;
+    const { action, videoId, accountId, titleId } = body;
 
     if (action === 'scan') {
       const result = await scanAllSwarmVideosHealth({ maxCheck: 300 });
@@ -79,6 +81,16 @@ export async function POST(request: NextRequest) {
     if (action === 'reactivate_account' && accountId) {
       await reactivateDmAccount(accountId);
       return NextResponse.json({ success: true, message: `Account #${accountId} reactivated.` });
+    }
+
+    if (action === 'blacklist_title' && titleId) {
+      await blacklistTitle(titleId);
+      return NextResponse.json({ success: true, message: `Title #${titleId} has been blacklisted. All future episode uploads are halted.` });
+    }
+
+    if (action === 'unblacklist_title' && titleId) {
+      await unblacklistTitle(titleId);
+      return NextResponse.json({ success: true, message: `Title #${titleId} has been unblacklisted and restored to discovered.` });
     }
 
     return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 });

@@ -40,9 +40,9 @@ export async function runUploads(options: UploadRunOptions = {}) {
   let uploadsAttempted = 0;
   let itemsPutOnHold = 0;
 
-  // 1. Fetch candidate titles (only mapped TMDB titles)
+  // 1. Fetch candidate titles (only mapped TMDB titles, exclude failed and blacklisted)
   const allTitles = await getAllTitles();
-  let titles = allTitles.filter(t => t.tmdb_id != null && t.status !== 'failed');
+  let titles = allTitles.filter(t => t.tmdb_id != null && t.status !== 'failed' && t.status !== 'blacklisted');
 
   // 2. Prioritize: 
   // Priority 1: explicitly requested title (e.g. 314939)
