@@ -104,11 +104,26 @@ export async function runUploads(options: UploadRunOptions = {}) {
 
       if (isMovie) {
         // MOVIE LOGIC
-        const alreadyUploaded = existingVideos.some(v => v.upload_status === 'uploaded');
-        if (alreadyUploaded) {
+        const existing = existingVideos[0];
+        if (existing?.upload_status === 'uploaded') {
           await updateTitleStatus(title.id, 'completed');
           console.log(`  ✅ Movie already uploaded.`);
           continue;
+        }
+        if (existing?.upload_status === 'takedown') {
+          continue; // wait for explicit requeue / fallback
+        }
+
+        let excludeSizesMb: number[] = [];
+        let excludeUrls: string[] = [];
+        if (existing?.flagged_sources) {
+          try {
+            const list = JSON.parse(existing.flagged_sources);
+            for (const item of list) {
+              if (item.sizeMb) excludeSizesMb.push(item.sizeMb);
+              if (item.url) excludeUrls.push(item.url);
+            }
+          } catch {}
         }
 
         const releases = parseAllReleases(html);
@@ -117,8 +132,16 @@ export async function runUploads(options: UploadRunOptions = {}) {
           continue;
         }
 
-        const bestReleases = selectBestReleases(releases);
-        if (bestReleases.length === 0) continue;
+        const bestReleases = selectBestReleases(releases, {
+          excludeSizesMb,
+          excludeUrls,
+          preferAlternativeCodec: excludeSizesMb.length > 0,
+          preferAlternativeSource: excludeSizesMb.length > 0,
+        });
+        if (bestReleases.length === 0) {
+          console.log(`  ℹ️ All available releases for this movie match previously flagged sources.`);
+          continue;
+        }
 
         const result = await attemptUpload(client, swarm, title.id, title.tmdb_id, true, null, null, bestReleases);
         if (result === 'uploaded') {
@@ -142,10 +165,26 @@ export async function runUploads(options: UploadRunOptions = {}) {
             if (uploadsAttempted >= maxUploads) break;
             if ((Date.now() - startTime) / 1000 >= maxExecutionSeconds) break;
 
-            const alreadyUploaded = existingVideos.some(v => v.season === s && v.episode === e && v.upload_status === 'uploaded');
-            if (alreadyUploaded) {
+            const existing = existingVideos.find(v => v.season === s && v.episode === e);
+            if (existing?.upload_status === 'uploaded') {
               consecutiveEmpty = 0;
               continue;
+            }
+            if (existing?.upload_status === 'takedown') {
+              // Waiting for explicit requeue / fallback
+              continue;
+            }
+
+            let excludeSizesMb: number[] = [];
+            let excludeUrls: string[] = [];
+            if (existing?.flagged_sources) {
+              try {
+                const list = JSON.parse(existing.flagged_sources);
+                for (const item of list) {
+                  if (item.sizeMb) excludeSizesMb.push(item.sizeMb);
+                  if (item.url) excludeUrls.push(item.url);
+                }
+              } catch {}
             }
 
             const releases = parseReleases(html, s, e);
@@ -157,10 +196,19 @@ export async function runUploads(options: UploadRunOptions = {}) {
             }
 
             consecutiveEmpty = 0;
-            const bestReleases = selectBestReleases(releases);
-            if (bestReleases.length === 0) continue;
+            const bestReleases = selectBestReleases(releases, {
+              excludeSizesMb,
+              excludeUrls,
+              preferAlternativeCodec: excludeSizesMb.length > 0,
+              preferAlternativeSource: excludeSizesMb.length > 0,
+            });
 
-            console.log(`  📦 Checking S${s}E${e} (${bestReleases.length} releases available)`);
+            if (bestReleases.length === 0) {
+              console.log(`    ⚠️ S${s}E${e}: All releases match previously flagged sources. Skipping.`);
+              continue;
+            }
+
+            console.log(`  📦 Checking S${s}E${e} (${bestReleases.length} releases available${excludeSizesMb.length > 0 ? ', fallback diversity active' : ''})`);
             const result = await attemptUpload(client, swarm, title.id, title.tmdb_id, false, s, e, bestReleases);
             
             if (result === 'uploaded') {

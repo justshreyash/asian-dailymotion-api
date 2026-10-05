@@ -59,6 +59,23 @@ async function run() {
   assert(Boolean(best[1] && best[1].releaseTitle === 'Rel 1080p Large'), 'Follows with 1080p larger fallback');
   assert(Boolean(best[2] && best[2].releaseTitle === 'Rel 720p Small'), 'Follows with 720p fallback');
 
+  // Test exclusion & alternative fallback
+  const fallbackBest = selectBestReleases(mockReleases, {
+    excludeSizesMb: [1200], // Exclude the 1200MB one that was flagged
+  });
+  assert(Boolean(fallbackBest[0] && fallbackBest[0].releaseTitle === 'Rel 1080p Large'), 'Fallback excludes flagged release size and picks next alternative');
+
+  const codecReleases: StreamRelease[] = [
+    { id: '1', releaseTitle: 'Show.S01E01.1080p.DSNP.H.265.mkv', mirrors: ['http://1'], resolution: '1080p', sizeMb: 1500, source: 'Hub', mediaTags: [], audioLanguages: [] },
+    { id: '2', releaseTitle: 'Show.S01E01.1080p.HULU.H.264.mkv', mirrors: ['http://2'], resolution: '1080p', sizeMb: 1800, source: 'Hub', mediaTags: [], audioLanguages: [] },
+  ];
+  const codecBest = selectBestReleases(codecReleases, {
+    excludeSizesMb: [1500],
+    preferAlternativeCodec: true,
+    preferAlternativeSource: true,
+  });
+  assert(Boolean(codecBest[0] && codecBest[0].releaseTitle.includes('HULU.H.264')), 'Alternative codec and source selection picks HULU H.264 over DSNP H.265');
+
   // 3. Test Auth Security
   console.log('\n3. Testing Auth Security:');
   const prevEnv = process.env.ADMIN_SECRET;

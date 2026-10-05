@@ -4,6 +4,7 @@ import {
   getAllDmAccounts,
   getStats,
   requeueTakedownVideo,
+  requeueAllTakedowns,
   dismissTakedownVideo,
   resetAccountStrikes,
   quarantineDmAccount,
@@ -60,7 +61,12 @@ export async function POST(request: NextRequest) {
 
     if (action === 'requeue' && videoId) {
       await requeueTakedownVideo(videoId);
-      return NextResponse.json({ success: true, message: `Video #${videoId} requeued for re-upload with alternative clean release.` });
+      return NextResponse.json({ success: true, message: `Video #${videoId} requeued for re-upload with alternative clean release, and parent title unblocked.` });
+    }
+
+    if (action === 'requeue_all') {
+      const count = await requeueAllTakedowns();
+      return NextResponse.json({ success: true, count, message: `${count} takedown videos requeued for alternative release retry, and parent titles unblocked.` });
     }
 
     if (action === 'dismiss' && videoId) {

@@ -219,7 +219,9 @@ export interface VideoRow {
   error_message: string | null;
   takedown_detected_at?: string | null;
   takedown_reason?: string | null;
+  flagged_sources?: string | null;
   title_name?: string;
+  title_status?: string;
   account_label?: string;
   poster_url?: string | null;
   created_at: string;
@@ -322,25 +324,41 @@ export async function markVideoTakedown(id: number, reason = 'Flagged by Dailymo
   const video = await dbGet<VideoRow>('SELECT * FROM videos WHERE id = ?', [id]);
   const now = new Date().toISOString();
 
+  let flaggedSources: any[] = [];
+  try {
+    flaggedSources = JSON.parse(video?.flagged_sources || '[]');
+  } catch {}
+
+  if (video?.source_url && !flaggedSources.some(f => f.url === video.source_url)) {
+    flaggedSources.push({
+      url: video.source_url,
+      sizeMb: video.file_size_mb,
+      resolution: video.resolution,
+      reason,
+      flaggedAt: now,
+    });
+  }
+
   await dbRun(`
     UPDATE videos SET
       upload_status = 'takedown',
       error_message = ?,
       takedown_reason = ?,
       takedown_detected_at = ?,
+      flagged_sources = ?,
       updated_at = ?
     WHERE id = ?
-  `, [reason, reason, now, now, id]);
+  `, [reason, reason, now, JSON.stringify(flaggedSources), now, id]);
 
   // If video belonged to a swarm account, increment strike count on that account
   if (video && video.dm_account_id) {
     await incrementAccountStrike(video.dm_account_id, reason);
   }
 
-  // Automatically blacklist parent title to halt future episode uploads and prevent recurring strikes
+  // Automatically place parent title on safe hold to pause immediate re-uploads until alternative fallback decision
   if (video && video.title_id) {
     await dbRun("UPDATE titles SET status = 'blacklisted', updated_at = datetime('now') WHERE id = ?", [video.title_id]);
-    console.warn(`🛑 Auto-blacklisted Title #${video.title_id} to halt all future episode uploads.`);
+    console.warn(`🛑 Safe hold: Title #${video.title_id} temporarily blacklisted until fallback retry.`);
   }
 }
 
@@ -353,16 +371,50 @@ export async function unblacklistTitle(id: number): Promise<void> {
 }
 
 export async function requeueTakedownVideo(id: number): Promise<void> {
+  const video = await dbGet<VideoRow>('SELECT * FROM videos WHERE id = ?', [id]);
+  const now = new Date().toISOString();
+
+  let flaggedSources: any[] = [];
+  try {
+    flaggedSources = JSON.parse(video?.flagged_sources || '[]');
+  } catch {}
+
+  if (video?.source_url && !flaggedSources.some(f => f.url === video.source_url)) {
+    flaggedSources.push({
+      url: video.source_url,
+      sizeMb: video.file_size_mb,
+      resolution: video.resolution,
+      reason: video.takedown_reason || 'Fingerprint Recognition Suspension',
+      flaggedAt: now,
+    });
+  }
+
   await dbRun(`
     UPDATE videos SET
       upload_status = 'pending',
       dm_account_id = NULL,
       dm_video_id = NULL,
       dm_video_url = NULL,
-      error_message = NULL,
+      source_url = NULL,
+      flagged_sources = ?,
+      error_message = 'Requeued for alternative release fallback upload',
       updated_at = datetime('now')
     WHERE id = ?
-  `, [id]);
+  `, [JSON.stringify(flaggedSources), id]);
+
+  // Automatically unblock parent title to 'processing' so pipeline immediately ingests alternative encode
+  if (video && video.title_id) {
+    await dbRun("UPDATE titles SET status = 'processing', updated_at = datetime('now') WHERE id = ?", [video.title_id]);
+    console.log(`✅ Title #${video.title_id} restored to 'processing' for alternative release retry.`);
+  }
+}
+
+export async function requeueAllTakedowns(): Promise<number> {
+  const takedowns = await dbAll<VideoRow>("SELECT * FROM videos WHERE upload_status = 'takedown'");
+  for (const v of takedowns) {
+    await requeueTakedownVideo(v.id);
+  }
+  return takedowns.length;
 }
 
 export async function dismissTakedownVideo(id: number): Promise<void> {

@@ -377,6 +377,23 @@ export default function Dashboard() {
     }
   };
 
+  const handleRequeueAllTakedowns = async () => {
+    try {
+      const res = await fetch('/api/admin/takedowns', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ action: 'requeue_all' }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        fetchData();
+      }
+    } catch (err) {
+      console.error('Requeue all failed:', err);
+    }
+  };
+
   const handleCopy = (text: string, id: string) => {
     if (typeof navigator !== 'undefined' && navigator.clipboard) {
       navigator.clipboard.writeText(text);
@@ -1732,9 +1749,34 @@ export default function Dashboard() {
                       Suspended Video Streams ({takedowns.length})
                     </span>
                   </div>
-                  <span style={{ fontSize: '11px', color: '#64748b' }}>
-                    Public API returns clean fallback; users never see 404 player errors.
-                  </span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    <span style={{ fontSize: '11px', color: '#64748b' }}>
+                      Public API returns clean fallback; users never see 404 player errors.
+                    </span>
+                    {takedowns.length > 0 && (
+                      <button
+                        onClick={handleRequeueAllTakedowns}
+                        title="Re-queues all flagged videos to attempt alternative releases (different encoder/codec/source) and unblocks parent shows"
+                        style={{
+                          background: 'linear-gradient(135deg, #0284c7 0%, #0369a1 100%)',
+                          border: 'none',
+                          color: '#ffffff',
+                          padding: '5px 12px',
+                          borderRadius: '5px',
+                          fontSize: '11px',
+                          fontWeight: '600',
+                          cursor: 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '5px',
+                          boxShadow: '0 2px 8px rgba(2,132,199,0.3)',
+                        }}
+                      >
+                        <Zap size={12} />
+                        <span>Retry All Alt Encodes</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 {takedowns.length === 0 ? (

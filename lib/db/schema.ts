@@ -86,6 +86,7 @@ export async function initSchema(): Promise<void> {
   try { await dbRun("ALTER TABLE dm_accounts ADD COLUMN status TEXT DEFAULT 'active';"); } catch {}
   try { await dbRun("ALTER TABLE videos ADD COLUMN takedown_detected_at TEXT;"); } catch {}
   try { await dbRun("ALTER TABLE videos ADD COLUMN takedown_reason TEXT;"); } catch {}
+  try { await dbRun("ALTER TABLE videos ADD COLUMN flagged_sources TEXT DEFAULT '[]';"); } catch {}
 
   // Safe index creation
   try { await dbRun('CREATE INDEX IF NOT EXISTS idx_titles_tmdb ON titles(tmdb_id);'); } catch {}
