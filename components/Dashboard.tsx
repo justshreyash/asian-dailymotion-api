@@ -31,6 +31,7 @@ import {
   Zap,
   Ban,
   Clock,
+  Play,
 } from 'lucide-react';
 import {
   AreaChart,
@@ -144,6 +145,14 @@ export default function Dashboard() {
   const [newApiSecret, setNewApiSecret] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [pipelineLoading, setPipelineLoading] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'error' } | null>(null);
+
+  const triggerToast = (message: string, type: 'success' | 'info' | 'error' = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => {
+      setToast(curr => (curr?.message === message ? null : curr));
+    }, 4500);
+  };
 
   // Check auth silently on mount
   useEffect(() => {
@@ -433,28 +442,30 @@ export default function Dashboard() {
 
   const handleToggleAccount = async (id: number, currentStatus: number) => {
     try {
-      await fetch('/api/admin/accounts', {
+      const nextActive = currentStatus !== 1;
+      const res = await fetch('/api/admin/accounts', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ id, isActive: currentStatus !== 1 }),
+        body: JSON.stringify({ id, isActive: nextActive }),
       });
+      const data = await res.json();
+      if (data.success) {
+        triggerToast(`Node #${id} switched to ${nextActive ? 'ACTIVE' : 'PAUSED'}`, 'success');
+      }
       fetchData();
     } catch (err) {
+      triggerToast(`Failed to toggle drive: ${(err as Error).message}`, 'error');
       console.error(err);
     }
   };
 
-  const handleActivateAllDrives = async () => {
+  const handleManualSync = async () => {
     try {
-      await fetch('/api/admin/accounts', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-      });
-      fetchData();
+      await fetchData();
+      triggerToast('Synchronized with database: Swarm & Catalog up-to-date.', 'success');
     } catch (err) {
-      console.error(err);
+      triggerToast('Sync failed: ' + (err as Error).message, 'error');
     }
   };
 
@@ -462,6 +473,7 @@ export default function Dashboard() {
     if (!confirm(`Delete swarm node "${label}"?`)) return;
     try {
       await fetch(`/api/admin/accounts?id=${id}`, { method: 'DELETE', credentials: 'include' });
+      triggerToast(`Node "${label}" deleted.`, 'info');
       fetchData();
     } catch (err) {
       console.error(err);
@@ -471,6 +483,7 @@ export default function Dashboard() {
   const handleTriggerPipeline = async (action: string, extra: any = {}) => {
     try {
       setPipelineLoading(action);
+      triggerToast(`Starting ${action === 'upload' ? 'swarm upload pipeline' : action}...`, 'info');
       const res = await fetch('/api/admin/pipeline', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -479,9 +492,13 @@ export default function Dashboard() {
       });
       const data = await res.json();
       if (data.success) {
+        triggerToast(data.message || 'Pipeline operation completed.', 'success');
         fetchData();
+      } else {
+        triggerToast(data.error || 'Pipeline operation failed.', 'error');
       }
     } catch (err) {
+      triggerToast('Pipeline failed: ' + (err as Error).message, 'error');
       console.error(err);
     } finally {
       setPipelineLoading(null);
@@ -903,14 +920,37 @@ export default function Dashboard() {
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <button
+              onClick={() => handleTriggerPipeline('upload')}
+              disabled={pipelineLoading === 'upload'}
+              title="Dispatch pending videos across active swarm drives"
+              style={{
+                background: pipelineLoading === 'upload' ? '#1e293b' : 'linear-gradient(135deg, #0284c7, #2563eb)',
+                border: 'none',
+                color: '#ffffff',
+                padding: '6px 14px',
+                borderRadius: '5px',
+                fontSize: '12px',
+                fontWeight: '600',
+                cursor: pipelineLoading === 'upload' ? 'not-allowed' : 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                boxShadow: pipelineLoading === 'upload' ? 'none' : '0 2px 8px rgba(2, 132, 199, 0.35)',
+                transition: 'all 0.15s ease',
+              }}
+            >
+              <Play size={12} fill="#ffffff" className={pipelineLoading === 'upload' ? 'animate-pulse' : ''} />
+              <span>{pipelineLoading === 'upload' ? 'Uploading Batch...' : 'Process Uploads'}</span>
+            </button>
 
             <button
               onClick={() => setIsAddModalOpen(true)}
               style={{
-                background: '#0284c7',
-                border: 'none',
-                color: '#ffffff',
-                padding: '5px 12px',
+                background: '#131d31',
+                border: '1px solid #1a2234',
+                color: '#f8fafc',
+                padding: '6px 12px',
                 borderRadius: '5px',
                 fontSize: '12px',
                 fontWeight: '500',
@@ -924,23 +964,25 @@ export default function Dashboard() {
             </button>
 
             <button
-              onClick={() => fetchData()}
+              onClick={handleManualSync}
               disabled={loading}
+              title="Refresh database records"
               style={{
                 background: '#131d31',
                 border: '1px solid #1a2234',
-                color: '#94a3b8',
-                padding: '5px 10px',
+                color: loading ? '#38bdf8' : '#94a3b8',
+                padding: '6px 12px',
                 borderRadius: '5px',
                 fontSize: '12px',
                 cursor: 'pointer',
                 display: 'inline-flex',
                 alignItems: 'center',
-                gap: '4px',
+                gap: '5px',
+                transition: 'all 0.15s ease',
               }}
             >
               <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
-              <span>Sync</span>
+              <span>{loading ? 'Syncing...' : 'Sync'}</span>
             </button>
           </div>
         </header>
@@ -1120,82 +1162,88 @@ export default function Dashboard() {
                 </div>
 
                 <div style={{ background: '#0c101b', border: '1px solid #1a2234', borderRadius: '8px', overflow: 'hidden' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px', textAlign: 'left' }}>
-                    <thead>
-                      <tr style={{ background: '#0f1422', color: '#64748b', borderBottom: '1px solid #1a2234' }}>
-                        <th style={{ padding: '8px 12px', fontWeight: '500' }}>Title</th>
-                        <th style={{ padding: '8px 12px', fontWeight: '500' }}>Type</th>
-                        <th style={{ padding: '8px 12px', fontWeight: '500' }}>DM ID</th>
-                        <th style={{ padding: '8px 12px', fontWeight: '500' }}>Node</th>
-                        <th style={{ padding: '8px 12px', fontWeight: '500' }}>Endpoint</th>
-                        <th style={{ padding: '8px 12px', fontWeight: '500' }}>Action</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {videos.slice(0, 5).map((v, i) => {
-                        const apiPath = v.is_movie === 1 ? `/ko/${v.tmdb_id}` : `/ko/${v.tmdb_id}/${v.season}/${v.episode}`;
-                        return (
-                          <tr key={v.id} style={{ borderBottom: i < 4 ? '1px solid #1a2234' : 'none' }}>
-                            <td style={{ padding: '8px 12px', fontWeight: '500', color: '#f8fafc' }}>
-                              {v.title_name || `TMDB #${v.tmdb_id}`}
-                              {v.is_movie === 0 && <span style={{ color: '#64748b', marginLeft: '4px' }}>(S{v.season}E{v.episode})</span>}
-                            </td>
-                            <td style={{ padding: '8px 12px' }}>
-                              <span style={{
-                                padding: '1px 5px',
-                                borderRadius: '3px',
-                                fontSize: '10px',
-                                fontWeight: '600',
-                                background: v.is_movie === 1 ? 'rgba(99,102,241,0.1)' : 'rgba(56,189,248,0.1)',
-                                color: v.is_movie === 1 ? '#a5b4fc' : '#38bdf8',
-                              }}>
-                                {v.is_movie === 1 ? 'MOVIE' : 'SERIES'}
-                              </span>
-                            </td>
-                            <td style={{ padding: '8px 12px', fontFamily: 'monospace', color: '#34d399' }}>{v.dm_video_id}</td>
-                            <td style={{ padding: '8px 12px', color: '#94a3b8' }}>{v.account_label || `#${v.dm_account_id}`}</td>
-                            <td style={{ padding: '8px 12px' }}>
-                              <button
-                                onClick={() => handleCopy(apiPath, `api-${v.id}`)}
-                                style={{
-                                  background: '#131d31',
-                                  border: '1px solid #1a2234',
-                                  color: '#38bdf8',
-                                  padding: '2px 6px',
+                  {videos.filter(v => v.upload_status === 'uploaded').length === 0 ? (
+                    <div style={{ padding: '24px', textAlign: 'center', color: '#64748b', fontSize: '12px' }}>
+                      No hosted video streams uploaded yet. Click <strong>"Process Uploads"</strong> above to dispatch queued episodes.
+                    </div>
+                  ) : (
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px', textAlign: 'left' }}>
+                      <thead>
+                        <tr style={{ background: '#0f1422', color: '#64748b', borderBottom: '1px solid #1a2234' }}>
+                          <th style={{ padding: '8px 12px', fontWeight: '500' }}>Title</th>
+                          <th style={{ padding: '8px 12px', fontWeight: '500' }}>Type</th>
+                          <th style={{ padding: '8px 12px', fontWeight: '500' }}>DM ID</th>
+                          <th style={{ padding: '8px 12px', fontWeight: '500' }}>Drive</th>
+                          <th style={{ padding: '8px 12px', fontWeight: '500' }}>Endpoint</th>
+                          <th style={{ padding: '8px 12px', fontWeight: '500' }}>Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {videos.filter(v => v.upload_status === 'uploaded').slice(0, 5).map((v, i) => {
+                          const apiPath = v.is_movie === 1 ? `/ko/${v.tmdb_id}` : `/ko/${v.tmdb_id}/${v.season}/${v.episode}`;
+                          return (
+                            <tr key={v.id} style={{ borderBottom: i < 4 ? '1px solid #1a2234' : 'none' }}>
+                              <td style={{ padding: '8px 12px', fontWeight: '500', color: '#f8fafc' }}>
+                                {v.title_name || `TMDB #${v.tmdb_id}`}
+                                {v.is_movie === 0 && <span style={{ color: '#64748b', marginLeft: '4px' }}>(S{v.season}E{v.episode})</span>}
+                              </td>
+                              <td style={{ padding: '8px 12px' }}>
+                                <span style={{
+                                  padding: '1px 5px',
                                   borderRadius: '3px',
-                                  fontSize: '11px',
-                                  fontFamily: 'monospace',
-                                  cursor: 'pointer',
-                                  display: 'inline-flex',
-                                  alignItems: 'center',
-                                  gap: '3px',
-                                }}
-                              >
-                                <span>{apiPath}</span>
-                                {copiedId === `api-${v.id}` ? <Check size={10} /> : <Copy size={10} />}
-                              </button>
-                            </td>
-                            <td style={{ padding: '8px 12px' }}>
-                              <button
-                                onClick={() => setPreviewVideo(v)}
-                                style={{
-                                  background: '#0284c7',
-                                  border: 'none',
-                                  color: '#ffffff',
-                                  padding: '3px 8px',
-                                  borderRadius: '3px',
-                                  fontSize: '11px',
-                                  cursor: 'pointer',
-                                }}
-                              >
-                                Play
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                                  fontSize: '10px',
+                                  fontWeight: '600',
+                                  background: v.is_movie === 1 ? 'rgba(99,102,241,0.1)' : 'rgba(56,189,248,0.1)',
+                                  color: v.is_movie === 1 ? '#a5b4fc' : '#38bdf8',
+                                }}>
+                                  {v.is_movie === 1 ? 'MOVIE' : 'SERIES'}
+                                </span>
+                              </td>
+                              <td style={{ padding: '8px 12px', fontFamily: 'monospace', color: '#34d399' }}>{v.dm_video_id || '—'}</td>
+                              <td style={{ padding: '8px 12px', color: '#94a3b8' }}>{v.account_label || (v.dm_account_id ? `#${v.dm_account_id}` : '—')}</td>
+                              <td style={{ padding: '8px 12px' }}>
+                                <button
+                                  onClick={() => handleCopy(apiPath, `api-${v.id}`)}
+                                  style={{
+                                    background: '#131d31',
+                                    border: '1px solid #1a2234',
+                                    color: '#38bdf8',
+                                    padding: '2px 6px',
+                                    borderRadius: '3px',
+                                    fontSize: '11px',
+                                    fontFamily: 'monospace',
+                                    cursor: 'pointer',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '3px',
+                                  }}
+                                >
+                                  <span>{apiPath}</span>
+                                  {copiedId === `api-${v.id}` ? <Check size={10} /> : <Copy size={10} />}
+                                </button>
+                              </td>
+                              <td style={{ padding: '8px 12px' }}>
+                                <button
+                                  onClick={() => setPreviewVideo(v)}
+                                  style={{
+                                    background: '#0284c7',
+                                    border: 'none',
+                                    color: '#ffffff',
+                                    padding: '3px 8px',
+                                    borderRadius: '3px',
+                                    fontSize: '11px',
+                                    cursor: 'pointer',
+                                  }}
+                                >
+                                  Play
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  )}
                 </div>
               </div>
 
@@ -2447,6 +2495,31 @@ export default function Dashboard() {
               />
             </div>
           </div>
+        </div>
+      )}
+      {/* Floating Interactive Toast Feedback */}
+      {toast && (
+        <div style={{
+          position: 'fixed',
+          bottom: '24px',
+          right: '24px',
+          zIndex: 99999,
+          display: 'flex',
+          alignItems: 'center',
+          gap: '10px',
+          padding: '12px 18px',
+          borderRadius: '8px',
+          background: '#0c101b',
+          border: `1px solid ${toast.type === 'success' ? '#10b981' : toast.type === 'error' ? '#ef4444' : '#38bdf8'}`,
+          color: '#f8fafc',
+          fontSize: '13px',
+          fontWeight: '500',
+          boxShadow: '0 8px 30px rgba(0,0,0,0.7)',
+        }}>
+          {toast.type === 'success' && <CheckCircle2 size={16} color="#34d399" />}
+          {toast.type === 'error' && <AlertCircle size={16} color="#f87171" />}
+          {toast.type === 'info' && <RefreshCw size={16} color="#38bdf8" className="animate-spin" />}
+          <span>{toast.message}</span>
         </div>
       )}
 
