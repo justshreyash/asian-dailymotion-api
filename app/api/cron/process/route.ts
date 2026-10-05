@@ -15,14 +15,18 @@ async function executePipelineJob() {
     console.log('🕒 PIPELINE BATCH EXECUTION STARTED');
     console.log('=======================================');
 
-    // 1. Run Discovery (1 page to keep ingestion fast & fresh)
+    // 1. Audit Swarm Video Health (detect suspensions / takedowns and quarantine unsafe nodes)
+    const { scanAllSwarmVideosHealth } = await import('../../../../lib/dailymotion/health');
+    await scanAllSwarmVideosHealth({ maxCheck: 100 });
+
+    // 2. Run Discovery (1 page to keep ingestion fast & fresh)
     await runDiscovery(1);
 
-    // 2. Resolve TMDB IDs & Sync On-Air schedules
+    // 3. Resolve TMDB IDs & Sync On-Air schedules
     await runTmdbResolution();
     await syncAiringSeriesDetails();
 
-    // 3. Process Uploads with greedy bin-packing
+    // 4. Process Uploads with greedy bin-packing
     await runUploads({ maxUploads: 8 });
 
     console.log('\n=======================================');

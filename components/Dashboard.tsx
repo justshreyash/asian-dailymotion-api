@@ -21,6 +21,14 @@ import {
   LogOut,
   ShieldCheck,
   AlertCircle,
+  ShieldAlert,
+  Shield,
+  HeartPulse,
+  RotateCcw,
+  CheckCircle2,
+  AlertTriangle,
+  Radio,
+  Zap,
 } from 'lucide-react';
 import {
   AreaChart,
@@ -43,6 +51,8 @@ interface Account {
   daily_upload_count: number;
   daily_duration_seconds: number;
   daily_reset_at: string | null;
+  strike_count?: number;
+  status?: string; // 'active' | 'warning' | 'quarantined'
   is_active: number;
   last_used_at: string | null;
   created_at: string;
@@ -83,6 +93,10 @@ interface VideoFile {
   file_size_mb: number | null;
   duration_seconds: number | null;
   upload_status: string;
+  error_message?: string | null;
+  takedown_detected_at?: string | null;
+  takedown_reason?: string | null;
+  poster_url?: string | null;
   title_name?: string;
   account_label?: string;
   created_at: string;
@@ -102,11 +116,16 @@ export default function Dashboard() {
   const [authLoading, setAuthLoading] = useState(false);
 
   // Dashboard Data State
-  const [activeTab, setActiveTab] = useState<'overview' | 'nodes' | 'catalog' | 'files' | 'pipeline'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'nodes' | 'catalog' | 'files' | 'takedowns' | 'pipeline'>('overview');
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [titles, setTitles] = useState<Title[]>([]);
   const [videos, setVideos] = useState<VideoFile[]>([]);
+  const [takedowns, setTakedowns] = useState<VideoFile[]>([]);
   const [loading, setLoading] = useState(false);
+
+  // Takedowns & Health Scan State
+  const [healthScanLoading, setHealthScanLoading] = useState(false);
+  const [healthScanSummary, setHealthScanSummary] = useState<any>(null);
 
   // Search & Filter
   const [searchQuery, setSearchQuery] = useState('');
@@ -187,6 +206,7 @@ export default function Dashboard() {
       setAccounts([]);
       setTitles([]);
       setVideos([]);
+      setTakedowns([]);
     } catch (err) {
       console.error(err);
     }
@@ -195,19 +215,128 @@ export default function Dashboard() {
   const fetchData = async () => {
     try {
       setLoading(true);
-      const [accRes, titlesRes, vidsRes] = await Promise.all([
+      const [accRes, titlesRes, vidsRes, takeRes] = await Promise.all([
         fetch('/api/admin/accounts', { credentials: 'include' }).then(r => r.json()),
         fetch('/api/admin/titles', { credentials: 'include' }).then(r => r.json()),
         fetch('/api/admin/videos', { credentials: 'include' }).then(r => r.json()),
+        fetch('/api/admin/takedowns', { credentials: 'include' }).then(r => r.json()).catch(() => ({ takedowns: [] })),
       ]);
 
       if (accRes.accounts) setAccounts(accRes.accounts);
       if (titlesRes.titles) setTitles(titlesRes.titles);
       if (vidsRes.videos) setVideos(vidsRes.videos);
+      if (takeRes.takedowns) setTakedowns(takeRes.takedowns);
     } catch (err) {
       console.error('Fetch dashboard data failed:', err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleRunHealthAudit = async () => {
+    try {
+      setHealthScanLoading(true);
+      setHealthScanSummary(null);
+      const res = await fetch('/api/admin/takedowns', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ action: 'scan' }),
+      });
+      const data = await res.json();
+      if (data.summary) {
+        setHealthScanSummary(data.summary);
+      }
+      fetchData();
+    } catch (err) {
+      console.error('Health scan failed:', err);
+    } finally {
+      setHealthScanLoading(false);
+    }
+  };
+
+  const handleRequeueTakedown = async (videoId: number) => {
+    try {
+      const res = await fetch('/api/admin/takedowns', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ action: 'requeue', videoId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        fetchData();
+      }
+    } catch (err) {
+      console.error('Requeue failed:', err);
+    }
+  };
+
+  const handleDismissTakedown = async (videoId: number) => {
+    try {
+      const res = await fetch('/api/admin/takedowns', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ action: 'dismiss', videoId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        fetchData();
+      }
+    } catch (err) {
+      console.error('Dismiss failed:', err);
+    }
+  };
+
+  const handleResetStrikes = async (accountId: number) => {
+    try {
+      const res = await fetch('/api/admin/takedowns', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ action: 'reset_strikes', accountId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        fetchData();
+      }
+    } catch (err) {
+      console.error('Reset strikes failed:', err);
+    }
+  };
+
+  const handleQuarantineAccount = async (accountId: number) => {
+    try {
+      const res = await fetch('/api/admin/takedowns', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ action: 'quarantine_account', accountId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        fetchData();
+      }
+    } catch (err) {
+      console.error('Quarantine failed:', err);
+    }
+  };
+
+  const handleReactivateAccount = async (accountId: number) => {
+    try {
+      const res = await fetch('/api/admin/takedowns', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ action: 'reactivate_account', accountId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        fetchData();
+      }
+    } catch (err) {
+      console.error('Reactivate failed:', err);
     }
   };
 
@@ -585,11 +714,18 @@ export default function Dashboard() {
         {/* Navigation */}
         <nav style={{ flex: 1, padding: '16px 10px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
           {[
-            { id: 'overview', label: 'Overview', icon: BarChart3, badge: null },
-            { id: 'nodes', label: 'Swarm Drives', icon: HardDrive, badge: accounts.length },
-            { id: 'catalog', label: 'Catalog Index', icon: Film, badge: totalTitles },
-            { id: 'files', label: 'Hosted Videos', icon: Video, badge: totalUploadedVideos },
-            { id: 'pipeline', label: 'Pipeline Tasks', icon: Activity, badge: null },
+            { id: 'overview', label: 'Overview', icon: BarChart3, badge: null, badgeColor: null },
+            { id: 'nodes', label: 'Swarm Drives', icon: HardDrive, badge: accounts.length, badgeColor: null },
+            { id: 'catalog', label: 'Catalog Index', icon: Film, badge: totalTitles, badgeColor: null },
+            { id: 'files', label: 'Hosted Videos', icon: Video, badge: totalUploadedVideos, badgeColor: null },
+            { 
+              id: 'takedowns', 
+              label: 'Takedowns & Health', 
+              icon: ShieldAlert, 
+              badge: takedowns.length > 0 ? takedowns.length : (accounts.some(a => (a.strike_count || 0) > 0) ? '!' : null),
+              badgeColor: takedowns.length > 0 ? '#ef4444' : '#f59e0b'
+            },
+            { id: 'pipeline', label: 'Pipeline Tasks', icon: Activity, badge: null, badgeColor: null },
           ].map(item => {
             const isActive = activeTab === item.id;
             const Icon = item.icon;
@@ -623,9 +759,10 @@ export default function Dashboard() {
                     fontSize: '10px',
                     padding: '1px 6px',
                     borderRadius: '4px',
-                    background: isActive ? '#0284c7' : '#1a2234',
-                    color: isActive ? '#ffffff' : '#64748b',
-                    fontWeight: '600',
+                    background: item.badgeColor ? (item.badgeColor === '#ef4444' ? 'rgba(239,68,68,0.2)' : 'rgba(245,158,11,0.2)') : (isActive ? '#0284c7' : '#1a2234'),
+                    color: item.badgeColor || (isActive ? '#ffffff' : '#64748b'),
+                    border: item.badgeColor ? `1px solid ${item.badgeColor}40` : 'none',
+                    fontWeight: '700',
                   }}>
                     {item.badge}
                   </span>
@@ -1358,7 +1495,473 @@ export default function Dashboard() {
           )}
 
           {/* ─────────────────────────────────────────────────────────
-              TAB 5: PIPELINE CONTROLS (CLEAN CARDS)
+              TAB 5: TAKEDOWNS & ACCOUNT HEALTH (SHIELD & STRIKE MONITOR)
+          ────────────────────────────────────────────────────────── */}
+          {activeTab === 'takedowns' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+              
+              {/* Status Header Banner */}
+              <div style={{
+                background: takedowns.length === 0 ? 'rgba(16,185,129,0.06)' : 'rgba(239,68,68,0.08)',
+                border: `1px solid ${takedowns.length === 0 ? 'rgba(16,185,129,0.25)' : 'rgba(239,68,68,0.3)'}`,
+                borderRadius: '8px',
+                padding: '16px 20px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                flexWrap: 'wrap',
+                gap: '12px',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <div style={{
+                    width: '38px',
+                    height: '38px',
+                    borderRadius: '8px',
+                    background: takedowns.length === 0 ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: takedowns.length === 0 ? '#34d399' : '#f87171',
+                  }}>
+                    {takedowns.length === 0 ? <ShieldCheck size={22} /> : <ShieldAlert size={22} />}
+                  </div>
+                  <div>
+                    <div style={{ fontWeight: '700', fontSize: '14px', color: '#f8fafc' }}>
+                      {takedowns.length === 0
+                        ? 'Swarm Shield Active — 100% Video Streams Healthy'
+                        : `${takedowns.length} Video Stream(s) Suspended by Dailymotion Fingerprint Detection`}
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '2px' }}>
+                      {takedowns.length === 0
+                        ? 'All hosted video links are alive and verified. Auto-quarantine protection is safeguarding worker nodes.'
+                        : 'Access suspended by Audible Magic / INA digital fingerprinting. Affected accounts auto-quarantined to protect channels.'}
+                    </div>
+                  </div>
+                </div>
+
+                <button
+                  onClick={handleRunHealthAudit}
+                  disabled={healthScanLoading}
+                  style={{
+                    background: healthScanLoading ? '#1a2234' : '#0284c7',
+                    border: 'none',
+                    color: '#ffffff',
+                    padding: '8px 16px',
+                    borderRadius: '6px',
+                    fontSize: '12px',
+                    fontWeight: '600',
+                    cursor: healthScanLoading ? 'not-allowed' : 'pointer',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    transition: 'all 0.15s ease',
+                  }}
+                >
+                  <RefreshCw size={13} className={healthScanLoading ? 'animate-spin' : ''} />
+                  <span>{healthScanLoading ? 'Scanning DM Swarm...' : 'Run Swarm Health Audit'}</span>
+                </button>
+              </div>
+
+              {/* Health Scan Summary Toast if just run */}
+              {healthScanSummary && (
+                <div style={{
+                  background: '#0c101b',
+                  border: '1px solid #1a2234',
+                  borderRadius: '6px',
+                  padding: '12px 16px',
+                  fontSize: '12px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  color: '#e2e8f0',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <CheckCircle2 size={16} color="#34d399" />
+                    <span>
+                      Audit Complete: <strong>{healthScanSummary.totalChecked}</strong> checked — 
+                      <strong style={{ color: '#34d399', marginLeft: '4px' }}>{healthScanSummary.aliveCount} healthy</strong>, 
+                      <strong style={{ color: '#f87171', marginLeft: '4px' }}>{healthScanSummary.takedownCount} takedowns</strong>, 
+                      <strong style={{ color: '#fbbf24', marginLeft: '4px' }}>{healthScanSummary.quarantinedAccounts} quarantined nodes</strong>.
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => setHealthScanSummary(null)}
+                    style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer' }}
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              )}
+
+              {/* 4 Health Metric Cards */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '14px' }}>
+                {[
+                  {
+                    label: 'Flagged Takedowns',
+                    value: takedowns.length,
+                    sub: takedowns.length === 0 ? 'Zero active suspensions' : 'Suspended by fingerprint detector',
+                    color: takedowns.length === 0 ? '#34d399' : '#f87171',
+                    icon: ShieldAlert,
+                  },
+                  {
+                    label: 'Healthy Worker Drives',
+                    value: `${accounts.filter(a => a.is_active === 1 && (a.strike_count || 0) < 2).length} / ${accounts.length}`,
+                    sub: 'Active upload capacity ready',
+                    color: '#38bdf8',
+                    icon: HardDrive,
+                  },
+                  {
+                    label: 'Quarantined Nodes',
+                    value: accounts.filter(a => a.status === 'quarantined' || (a.strike_count || 0) >= 2).length,
+                    sub: 'Auto-paused to prevent channel ban',
+                    color: accounts.some(a => a.status === 'quarantined' || (a.strike_count || 0) >= 2) ? '#fbbf24' : '#64748b',
+                    icon: Lock,
+                  },
+                  {
+                    label: 'Strike Threshold',
+                    value: '2 Strikes',
+                    sub: 'Auto-quarantine safeguard limit',
+                    color: '#a78bfa',
+                    icon: Shield,
+                  },
+                ].map((item, i) => (
+                  <div key={i} style={{
+                    background: '#0c101b',
+                    border: '1px solid #1a2234',
+                    borderRadius: '8px',
+                    padding: '16px',
+                  }}>
+                    <div style={{ fontSize: '11px', color: '#64748b', fontWeight: '500' }}>{item.label}</div>
+                    <div style={{ fontSize: '22px', fontWeight: '700', color: item.color, marginTop: '4px' }}>{item.value}</div>
+                    <div style={{ fontSize: '11px', color: '#475569', marginTop: '2px' }}>{item.sub}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Takedowns / Flagged Videos Table */}
+              <div style={{ background: '#0c101b', border: '1px solid #1a2234', borderRadius: '8px', overflow: 'hidden' }}>
+                <div style={{
+                  padding: '14px 18px',
+                  borderBottom: '1px solid #1a2234',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <ShieldAlert size={16} color="#f87171" />
+                    <span style={{ fontWeight: '600', color: '#f8fafc', fontSize: '13px' }}>
+                      Suspended Video Streams ({takedowns.length})
+                    </span>
+                  </div>
+                  <span style={{ fontSize: '11px', color: '#64748b' }}>
+                    Public API returns clean fallback; users never see 404 player errors.
+                  </span>
+                </div>
+
+                {takedowns.length === 0 ? (
+                  <div style={{ padding: '36px 20px', textAlign: 'center', color: '#64748b' }}>
+                    <CheckCircle2 size={32} color="#34d399" style={{ margin: '0 auto 10px auto' }} />
+                    <div style={{ color: '#f8fafc', fontWeight: '600', fontSize: '13px' }}>
+                      No Suspended or Flagged Videos
+                    </div>
+                    <div style={{ fontSize: '12px', marginTop: '4px' }}>
+                      All uploaded streams across all swarm worker nodes are active and verified.
+                    </div>
+                  </div>
+                ) : (
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px', textAlign: 'left' }}>
+                    <thead>
+                      <tr style={{ background: '#0f1422', color: '#64748b', borderBottom: '1px solid #1a2234' }}>
+                        <th style={{ padding: '8px 12px', fontWeight: '500' }}>Title</th>
+                        <th style={{ padding: '8px 12px', fontWeight: '500' }}>Type</th>
+                        <th style={{ padding: '8px 12px', fontWeight: '500' }}>Flagged Video ID</th>
+                        <th style={{ padding: '8px 12px', fontWeight: '500' }}>Worker Node</th>
+                        <th style={{ padding: '8px 12px', fontWeight: '500' }}>Detected</th>
+                        <th style={{ padding: '8px 12px', fontWeight: '500' }}>Reason</th>
+                        <th style={{ padding: '8px 12px', fontWeight: '500' }}>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {takedowns.map((v, i) => (
+                        <tr key={v.id} style={{ borderBottom: i < takedowns.length - 1 ? '1px solid #1a2234' : 'none' }}>
+                          <td style={{ padding: '8px 12px', fontWeight: '500', color: '#f8fafc' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              {v.poster_url && (
+                                <img
+                                  src={v.poster_url}
+                                  alt=""
+                                  style={{ width: '24px', height: '36px', objectFit: 'cover', borderRadius: '3px' }}
+                                />
+                              )}
+                              <div>
+                                <div>{v.title_name || `TMDB #${v.tmdb_id}`}</div>
+                                {v.is_movie === 0 && (
+                                  <span style={{ fontSize: '10px', color: '#64748b' }}>
+                                    Season {v.season}, Episode {v.episode}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+                          <td style={{ padding: '8px 12px' }}>
+                            <span style={{
+                              padding: '1px 5px',
+                              borderRadius: '3px',
+                              fontSize: '10px',
+                              fontWeight: '600',
+                              background: v.is_movie === 1 ? 'rgba(99,102,241,0.1)' : 'rgba(56,189,248,0.1)',
+                              color: v.is_movie === 1 ? '#a5b4fc' : '#38bdf8',
+                            }}>
+                              {v.is_movie === 1 ? 'MOVIE' : 'SERIES'}
+                            </span>
+                          </td>
+                          <td style={{ padding: '8px 12px', fontFamily: 'monospace' }}>
+                            {v.dm_video_id ? (
+                              <a
+                                href={`https://www.dailymotion.com/video/${v.dm_video_id}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                style={{ color: '#f87171', textDecoration: 'none' }}
+                              >
+                                {v.dm_video_id} ↗
+                              </a>
+                            ) : '—'}
+                          </td>
+                          <td style={{ padding: '8px 12px', color: '#94a3b8' }}>
+                            {v.account_label || (v.dm_account_id ? `#${v.dm_account_id}` : '—')}
+                          </td>
+                          <td style={{ padding: '8px 12px', color: '#64748b', fontSize: '11px' }}>
+                            {v.takedown_detected_at ? new Date(v.takedown_detected_at).toLocaleString() : 'Recently'}
+                          </td>
+                          <td style={{ padding: '8px 12px', color: '#fbbf24', fontSize: '11px' }}>
+                            {v.takedown_reason || 'Fingerprint Recognition Suspension'}
+                          </td>
+                          <td style={{ padding: '8px 12px' }}>
+                            <div style={{ display: 'flex', gap: '6px' }}>
+                              <button
+                                onClick={() => handleRequeueTakedown(v.id)}
+                                title="Re-queues video to attempt upload from alternative release/encode onto clean node"
+                                style={{
+                                  background: '#0284c7',
+                                  border: 'none',
+                                  color: '#ffffff',
+                                  padding: '3px 8px',
+                                  borderRadius: '3px',
+                                  fontSize: '11px',
+                                  fontWeight: '600',
+                                  cursor: 'pointer',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px',
+                                }}
+                              >
+                                <RotateCcw size={11} />
+                                <span>Re-upload Alt</span>
+                              </button>
+                              <button
+                                onClick={() => handleDismissTakedown(v.id)}
+                                title="Archive this takedown entry"
+                                style={{
+                                  background: '#131d31',
+                                  border: '1px solid #1a2234',
+                                  color: '#94a3b8',
+                                  padding: '3px 8px',
+                                  borderRadius: '3px',
+                                  fontSize: '11px',
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                Dismiss
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+
+              {/* Swarm Worker Nodes Health & Strike Monitor */}
+              <div style={{ background: '#0c101b', border: '1px solid #1a2234', borderRadius: '8px', padding: '18px 20px' }}>
+                <div style={{ marginBottom: '16px' }}>
+                  <div style={{ fontSize: '13px', fontWeight: '600', color: '#f8fafc' }}>
+                    Worker Node Health &amp; Strike Monitor
+                  </div>
+                  <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px' }}>
+                    Tracks automated strikes per node. Drives reaching <strong>2 strikes</strong> automatically enter quarantine to prevent channel termination.
+                  </div>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '12px' }}>
+                  {accounts.map(acc => {
+                    const strikes = acc.strike_count || 0;
+                    const isQuarantined = acc.status === 'quarantined' || strikes >= 2;
+                    const isWarning = strikes === 1 && !isQuarantined;
+
+                    return (
+                      <div key={acc.id} style={{
+                        background: '#131d31',
+                        border: `1px solid ${isQuarantined ? 'rgba(239,68,68,0.3)' : isWarning ? 'rgba(245,158,11,0.3)' : '#1a2234'}`,
+                        borderRadius: '6px',
+                        padding: '14px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        justifyContent: 'space-between',
+                      }}>
+                        <div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              <HardDrive size={15} color={isQuarantined ? '#f87171' : isWarning ? '#fbbf24' : '#38bdf8'} />
+                              <span style={{ fontWeight: '600', color: '#f8fafc', fontSize: '13px' }}>{acc.label}</span>
+                            </div>
+
+                            <span style={{
+                              padding: '2px 6px',
+                              borderRadius: '3px',
+                              fontSize: '10px',
+                              fontWeight: '700',
+                              background: isQuarantined ? 'rgba(239,68,68,0.15)' : isWarning ? 'rgba(245,158,11,0.15)' : 'rgba(16,185,129,0.15)',
+                              color: isQuarantined ? '#f87171' : isWarning ? '#fbbf24' : '#34d399',
+                              border: `1px solid ${isQuarantined ? 'rgba(239,68,68,0.3)' : isWarning ? 'rgba(245,158,11,0.3)' : 'rgba(16,185,129,0.3)'}`,
+                            }}>
+                              {isQuarantined ? 'QUARANTINED (AUTO-SAFE)' : isWarning ? 'WARNING (1 STRIKE)' : 'HEALTHY'}
+                            </span>
+                          </div>
+
+                          {/* Strike meter visual */}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '6px', marginBottom: '8px' }}>
+                            <span style={{ fontSize: '11px', color: '#94a3b8' }}>Strikes:</span>
+                            <div style={{ display: 'flex', gap: '4px' }}>
+                              <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: strikes >= 1 ? '#f87171' : '#1e293b' }} />
+                              <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: strikes >= 2 ? '#f87171' : '#1e293b' }} />
+                            </div>
+                            <span style={{ fontSize: '11px', color: strikes > 0 ? '#f87171' : '#64748b', fontWeight: '600' }}>
+                              {strikes} / 2
+                            </span>
+                          </div>
+
+                          <div style={{ fontSize: '11px', color: '#64748b' }}>
+                            Uploads: {acc.daily_upload_count || 0}/14 today ({acc.upload_count} total)
+                          </div>
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '6px', marginTop: '12px', paddingTop: '10px', borderTop: '1px solid #1a2234' }}>
+                          <button
+                            onClick={() => handleResetStrikes(acc.id)}
+                            title="Reset strike counter to 0 and re-enable this node for uploads"
+                            style={{
+                              flex: 1,
+                              background: '#1a2234',
+                              border: '1px solid #2a3449',
+                              color: '#38bdf8',
+                              padding: '4px 8px',
+                              borderRadius: '4px',
+                              fontSize: '11px',
+                              fontWeight: '600',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            Reset Strikes
+                          </button>
+
+                          {isQuarantined ? (
+                            <button
+                              onClick={() => handleReactivateAccount(acc.id)}
+                              style={{
+                                background: 'rgba(16,185,129,0.15)',
+                                border: '1px solid rgba(16,185,129,0.3)',
+                                color: '#34d399',
+                                padding: '4px 8px',
+                                borderRadius: '4px',
+                                fontSize: '11px',
+                                fontWeight: '600',
+                                cursor: 'pointer',
+                              }}
+                            >
+                              Reactivate
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => handleQuarantineAccount(acc.id)}
+                              style={{
+                                background: 'rgba(239,68,68,0.1)',
+                                border: '1px solid rgba(239,68,68,0.2)',
+                                color: '#f87171',
+                                padding: '4px 8px',
+                                borderRadius: '4px',
+                                fontSize: '11px',
+                                cursor: 'pointer',
+                              }}
+                            >
+                              Quarantine
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Educational Anti-Ban & Account Protection Guide */}
+              <div style={{
+                background: '#0c101b',
+                border: '1px solid #1a2234',
+                borderRadius: '8px',
+                padding: '18px 20px',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
+                  <ShieldCheck size={18} color="#38bdf8" />
+                  <div style={{ fontSize: '13px', fontWeight: '700', color: '#f8fafc' }}>
+                    How Our Swarm Shield Keeps Accounts Safe
+                  </div>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '12px', marginTop: '12px' }}>
+                  <div style={{ background: '#131d31', padding: '12px', borderRadius: '6px', border: '1px solid #1a2234' }}>
+                    <div style={{ fontSize: '12px', fontWeight: '600', color: '#38bdf8', marginBottom: '4px' }}>
+                      1. Disposable Node Isolation
+                    </div>
+                    <div style={{ fontSize: '11px', color: '#94a3b8', lineHeight: '1.4' }}>
+                      Never use your main personal account as an upload node. Swarm worker drives act as isolated, disposable worker drives.
+                    </div>
+                  </div>
+
+                  <div style={{ background: '#131d31', padding: '12px', borderRadius: '6px', border: '1px solid #1a2234' }}>
+                    <div style={{ fontSize: '12px', fontWeight: '600', color: '#38bdf8', marginBottom: '4px' }}>
+                      2. Auto-Quarantine at 2 Strikes
+                    </div>
+                    <div style={{ fontSize: '11px', color: '#94a3b8', lineHeight: '1.4' }}>
+                      Dailymotion terminates accounts on 3 strikes. Our system automatically pauses worker nodes upon reaching 2 strikes, preventing channel loss.
+                    </div>
+                  </div>
+
+                  <div style={{ background: '#131d31', padding: '12px', borderRadius: '6px', border: '1px solid #1a2234' }}>
+                    <div style={{ fontSize: '12px', fontWeight: '600', color: '#38bdf8', marginBottom: '4px' }}>
+                      3. Metadata Obfuscation
+                    </div>
+                    <div style={{ fontSize: '11px', color: '#94a3b8', lineHeight: '1.4' }}>
+                      Video titles are strictly numerical identifiers (<code style={{ color: '#f8fafc' }}>tmdb-s-e</code>) marked private with zero copyrighted keywords.
+                    </div>
+                  </div>
+
+                  <div style={{ background: '#131d31', padding: '12px', borderRadius: '6px', border: '1px solid #1a2234' }}>
+                    <div style={{ fontSize: '12px', fontWeight: '600', color: '#38bdf8', marginBottom: '4px' }}>
+                      4. Alternative Release Switching
+                    </div>
+                    <div style={{ fontSize: '11px', color: '#94a3b8', lineHeight: '1.4' }}>
+                      When retrying flagged titles, the pipeline selects alternative release encodes (e.g. 720p/different GOP bitstreams) that differ from the flagged hash.
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          )}
+
+          {/* ─────────────────────────────────────────────────────────
+              TAB 6: PIPELINE CONTROLS (CLEAN CARDS)
           ────────────────────────────────────────────────────────── */}
           {activeTab === 'pipeline' && (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '14px' }}>

@@ -217,8 +217,11 @@ export interface VideoRow {
   duration_seconds: number | null;
   upload_status: string;
   error_message: string | null;
+  takedown_detected_at?: string | null;
+  takedown_reason?: string | null;
   title_name?: string;
   account_label?: string;
+  poster_url?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -267,7 +270,7 @@ export async function getVideosByTmdbId(tmdbId: number): Promise<VideoRow[]> {
 
 export async function getAllVideos(options: { q?: string; status?: string; limit?: number } = {}): Promise<VideoRow[]> {
   let sql = `
-    SELECT v.*, t.title as title_name, a.label as account_label
+    SELECT v.*, t.title as title_name, t.poster_url as poster_url, a.label as account_label
     FROM videos v
     LEFT JOIN titles t ON v.title_id = t.id
     LEFT JOIN dm_accounts a ON v.dm_account_id = a.id
@@ -291,6 +294,72 @@ export async function getAllVideos(options: { q?: string; status?: string; limit
   return dbAll<VideoRow>(sql, params);
 }
 
+export async function getTakedownVideos(limit = 100): Promise<VideoRow[]> {
+  return dbAll<VideoRow>(`
+    SELECT v.*, t.title as title_name, t.poster_url as poster_url, a.label as account_label
+    FROM videos v
+    LEFT JOIN titles t ON v.title_id = t.id
+    LEFT JOIN dm_accounts a ON v.dm_account_id = a.id
+    WHERE v.upload_status = 'takedown'
+    ORDER BY v.id DESC
+    LIMIT ?
+  `, [limit]);
+}
+
+export async function getUploadedVideos(limit = 500): Promise<VideoRow[]> {
+  return dbAll<VideoRow>(`
+    SELECT v.*, t.title as title_name, a.label as account_label
+    FROM videos v
+    LEFT JOIN titles t ON v.title_id = t.id
+    LEFT JOIN dm_accounts a ON v.dm_account_id = a.id
+    WHERE v.upload_status = 'uploaded' AND v.dm_video_id IS NOT NULL
+    ORDER BY v.id DESC
+    LIMIT ?
+  `, [limit]);
+}
+
+export async function markVideoTakedown(id: number, reason = 'Flagged by Dailymotion Automated Fingerprint Recognition'): Promise<void> {
+  const video = await dbGet<VideoRow>('SELECT * FROM videos WHERE id = ?', [id]);
+  const now = new Date().toISOString();
+
+  await dbRun(`
+    UPDATE videos SET
+      upload_status = 'takedown',
+      error_message = ?,
+      takedown_reason = ?,
+      takedown_detected_at = ?,
+      updated_at = ?
+    WHERE id = ?
+  `, [reason, reason, now, now, id]);
+
+  // If video belonged to a swarm account, increment strike count on that account
+  if (video && video.dm_account_id) {
+    await incrementAccountStrike(video.dm_account_id, reason);
+  }
+}
+
+export async function requeueTakedownVideo(id: number): Promise<void> {
+  await dbRun(`
+    UPDATE videos SET
+      upload_status = 'pending',
+      dm_account_id = NULL,
+      dm_video_id = NULL,
+      dm_video_url = NULL,
+      error_message = NULL,
+      updated_at = datetime('now')
+    WHERE id = ?
+  `, [id]);
+}
+
+export async function dismissTakedownVideo(id: number): Promise<void> {
+  await dbRun(`
+    UPDATE videos SET
+      upload_status = 'archived',
+      updated_at = datetime('now')
+    WHERE id = ?
+  `, [id]);
+}
+
 export async function getPendingVideos(limit = 10): Promise<VideoRow[]> {
   return dbAll<VideoRow>("SELECT * FROM videos WHERE upload_status = 'pending' LIMIT ?", [limit]);
 }
@@ -310,6 +379,7 @@ export async function updateVideoUpload(id: number, data: {
       source_url = ?,
       duration_seconds = COALESCE(?, duration_seconds, 0),
       upload_status = 'uploaded',
+      error_message = NULL,
       updated_at = datetime('now')
     WHERE id = ?
   `, [data.dmAccountId, data.dmVideoId, data.dmVideoUrl, data.sourceUrl, data.durationSeconds ?? null, id]);
@@ -351,7 +421,7 @@ export async function updateVideoError(id: number, error: string): Promise<void>
 }
 
 // ---------------------------------------------------------------------------
-// DM Accounts
+// DM Accounts & Strike Management
 // ---------------------------------------------------------------------------
 
 export interface DmAccountRow {
@@ -365,6 +435,8 @@ export interface DmAccountRow {
   daily_upload_count: number;
   daily_duration_seconds: number;
   daily_reset_at: string | null;
+  strike_count: number;
+  status: string; // 'active' | 'warning' | 'quarantined'
   is_active: number;
   last_used_at: string | null;
   created_at: string;
@@ -376,8 +448,8 @@ export async function addDmAccount(data: {
   apiSecret: string;
 }): Promise<DmAccountRow | undefined> {
   await dbRun(`
-    INSERT INTO dm_accounts (label, api_key, api_secret)
-    VALUES (?, ?, ?)
+    INSERT INTO dm_accounts (label, api_key, api_secret, strike_count, status, is_active)
+    VALUES (?, ?, ?, 0, 'active', 1)
   `, [data.label, data.apiKey, data.apiSecret]);
 
   // When a new account is added to the swarm, immediately release any on-hold videos back to pending
@@ -388,6 +460,7 @@ export async function addDmAccount(data: {
 
 export const DAILY_UPLOAD_LIMIT = 14;
 export const DAILY_DURATION_LIMIT_SECONDS = 34200; // 9.5 hours
+export const MAX_ALLOWED_STRIKES = 2; // Auto-quarantine at 2 strikes to prevent account termination
 
 async function performDailyResetIfNeeded(): Promise<void> {
   const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
@@ -409,15 +482,72 @@ export async function getActiveDmAccounts(): Promise<DmAccountRow[]> {
   return dbAll<DmAccountRow>(`
     SELECT * FROM dm_accounts
     WHERE is_active = 1 
+      AND COALESCE(status, 'active') != 'quarantined'
+      AND COALESCE(strike_count, 0) < ?
       AND daily_upload_count < ?
       AND COALESCE(daily_duration_seconds, 0) < ?
     ORDER BY daily_upload_count ASC, COALESCE(daily_duration_seconds, 0) ASC, upload_count ASC
-  `, [DAILY_UPLOAD_LIMIT, DAILY_DURATION_LIMIT_SECONDS]);
+  `, [MAX_ALLOWED_STRIKES, DAILY_UPLOAD_LIMIT, DAILY_DURATION_LIMIT_SECONDS]);
 }
 
 export async function getAllDmAccounts(): Promise<DmAccountRow[]> {
   await performDailyResetIfNeeded();
   return dbAll<DmAccountRow>('SELECT * FROM dm_accounts ORDER BY id ASC');
+}
+
+export async function incrementAccountStrike(id: number, reason?: string): Promise<void> {
+  const account = await dbGet<DmAccountRow>('SELECT * FROM dm_accounts WHERE id = ?', [id]);
+  if (!account) return;
+
+  const newStrikeCount = (account.strike_count || 0) + 1;
+  let newStatus = 'active';
+
+  if (newStrikeCount >= MAX_ALLOWED_STRIKES) {
+    newStatus = 'quarantined';
+    console.warn(`🚨 Account #${id} ("${account.label}") reached ${newStrikeCount} strikes! AUTO-QUARANTINING node to protect account.`);
+    await dbRun(`
+      UPDATE dm_accounts SET
+        strike_count = ?,
+        status = 'quarantined',
+        is_active = 0,
+        last_used_at = datetime('now')
+      WHERE id = ?
+    `, [newStrikeCount, id]);
+  } else {
+    newStatus = 'warning';
+    console.warn(`⚠️ Account #${id} ("${account.label}") received strike ${newStrikeCount}/${MAX_ALLOWED_STRIKES}.`);
+    await dbRun(`
+      UPDATE dm_accounts SET
+        strike_count = ?,
+        status = 'warning',
+        last_used_at = datetime('now')
+      WHERE id = ?
+    `, [newStrikeCount, id]);
+  }
+}
+
+export async function resetAccountStrikes(id: number): Promise<void> {
+  await dbRun(`
+    UPDATE dm_accounts SET
+      strike_count = 0,
+      status = 'active',
+      is_active = 1,
+      last_used_at = datetime('now')
+    WHERE id = ?
+  `, [id]);
+  console.log(`✅ Strikes reset and node #${id} reactivated.`);
+}
+
+export async function quarantineDmAccount(id: number): Promise<void> {
+  await dbRun(`
+    UPDATE dm_accounts SET status = 'quarantined', is_active = 0 WHERE id = ?
+  `, [id]);
+}
+
+export async function reactivateDmAccount(id: number): Promise<void> {
+  await dbRun(`
+    UPDATE dm_accounts SET status = 'active', is_active = 1 WHERE id = ?
+  `, [id]);
 }
 
 export async function updateDmAccountToken(id: number, token: string, expiresAt: string): Promise<void> {
@@ -454,15 +584,19 @@ export async function getStats(): Promise<{
   totalVideos: number;
   uploadedVideos: number;
   pendingVideos: number;
+  takedownVideos: number;
   failedVideos: number;
   activeAccounts: number;
+  quarantinedAccounts: number;
 }> {
   const totalTitles = ((await dbGet<{ c: number }>('SELECT COUNT(*) as c FROM titles'))?.c) || 0;
   const totalVideos = ((await dbGet<{ c: number }>('SELECT COUNT(*) as c FROM videos'))?.c) || 0;
   const uploadedVideos = ((await dbGet<{ c: number }>("SELECT COUNT(*) as c FROM videos WHERE upload_status = 'uploaded'"))?.c) || 0;
   const pendingVideos = ((await dbGet<{ c: number }>("SELECT COUNT(*) as c FROM videos WHERE upload_status = 'pending'"))?.c) || 0;
+  const takedownVideos = ((await dbGet<{ c: number }>("SELECT COUNT(*) as c FROM videos WHERE upload_status = 'takedown'"))?.c) || 0;
   const failedVideos = ((await dbGet<{ c: number }>("SELECT COUNT(*) as c FROM videos WHERE upload_status = 'failed'"))?.c) || 0;
   const activeAccounts = ((await dbGet<{ c: number }>('SELECT COUNT(*) as c FROM dm_accounts WHERE is_active = 1'))?.c) || 0;
+  const quarantinedAccounts = ((await dbGet<{ c: number }>("SELECT COUNT(*) as c FROM dm_accounts WHERE is_active = 0"))?.c) || 0;
 
-  return { totalTitles, totalVideos, uploadedVideos, pendingVideos, failedVideos, activeAccounts };
+  return { totalTitles, totalVideos, uploadedVideos, pendingVideos, takedownVideos, failedVideos, activeAccounts, quarantinedAccounts };
 }

@@ -61,6 +61,25 @@ export async function GET(
     });
   }
 
+  // 3. Video was flagged / taken down: return pending_replacement gracefully
+  if (video && video.upload_status === 'takedown') {
+    return NextResponse.json({
+      tmdb_id: tmdbId,
+      title: title?.title || null,
+      season,
+      episode,
+      status: 'pending_replacement',
+      is_movie: false,
+      is_on_air: Boolean(title?.is_on_air),
+      airing_status: title?.airing_status || 'Ended',
+      message: `Episode S${season}E${episode} stream mirror is currently undergoing automated re-encoding / replacement release migration.`,
+      dm_video_id: null,
+      dm_video_url: null,
+      dm_embed_url: null,
+      retry_after_seconds: 300,
+    });
+  }
+
   // 3. Video not yet in videos table, but Title exists in DB
   if (title) {
     const isOnAir = Boolean(title.is_on_air || title.airing_status === 'Returning Series');

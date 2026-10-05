@@ -100,7 +100,19 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: true, message: `Synced durations for ${updatedVideos} videos across swarm` });
     }
 
+    if (action === 'health_check') {
+      const { scanAllSwarmVideosHealth } = await import('@/lib/dailymotion/health');
+      const scanResult = await scanAllSwarmVideosHealth({ maxCheck: 300 });
+      return NextResponse.json({
+        success: true,
+        message: `Health scan complete: ${scanResult.aliveCount} healthy, ${scanResult.takedownCount} takedowns, ${scanResult.quarantinedAccounts} quarantined accounts.`,
+        summary: scanResult,
+      });
+    }
+
     // Default 'all'
+    const { scanAllSwarmVideosHealth } = await import('@/lib/dailymotion/health');
+    await scanAllSwarmVideosHealth({ maxCheck: 100 });
     await runDiscovery(1);
     await runTmdbResolution();
     await runUploads();
