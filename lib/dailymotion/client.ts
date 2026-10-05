@@ -145,9 +145,8 @@ export async function uploadVideoByUrl(
     channelId?: string;
   },
 ): Promise<DmUploadResult> {
-  const targetUser = data.channelId || extractOwnerIdFromJwt(accessToken);
-  const endpoint = targetUser
-    ? `https://partner.api.dailymotion.com/rest/user/${targetUser}/videos`
+  const endpoint = data.channelId
+    ? `https://partner.api.dailymotion.com/rest/user/${data.channelId}/videos`
     : `https://partner.api.dailymotion.com/rest/videos`;
 
   const body = new URLSearchParams({

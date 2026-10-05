@@ -168,15 +168,14 @@ export class DmSwarm {
           };
         }
 
-        // Check if it's a rate limit or quota error
-        if (result.error?.includes('429') || result.error?.includes('403') || result.error?.includes('quota') || result.error?.includes('upload_limit_exceeded') || result.error?.includes('slow down')) {
-          console.log(`  ⚠️ Node "${account.label}" hit velocity rate limit ("${result.error}"). Placing on 15m cooldown, automatically switching to next drive.`);
-          nodeCooldowns.set(account.id, Date.now() + 15 * 60 * 1000);
-          continue;
+        // If Dailymotion rejects the remote stream URL itself, skip trying other accounts on the identical bad URL
+        if (result.error?.includes('upload_limit_exceeded') || result.error?.includes('403')) {
+          console.log(`  ⚠️ URL rejected by Dailymotion ingest bot ("${result.error}"). Skipping this stream URL.`);
+          return { success: false, error: `Remote stream URL rejected: ${result.error}` };
         }
 
-        // Other error — log and try next account
-        console.log(`  ❌ Account "${account.label}" failed: ${result.error}`);
+        // Other account-specific error — try next account in swarm
+        console.log(`  ⚠️ Account "${account.label}" failed: ${result.error}. Trying next node...`);
         continue;
 
       } catch (e) {

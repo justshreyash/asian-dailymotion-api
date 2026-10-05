@@ -55,9 +55,9 @@ export async function runUploads(options: UploadRunOptions = {}) {
       if (a.tmdb_id === options.prioritizeTmdbId) return -1;
       if (b.tmdb_id === options.prioritizeTmdbId) return 1;
     }
-    const aOnAir = a.is_on_air ? 1 : 0;
-    const bOnAir = b.is_on_air ? 1 : 0;
-    if (aOnAir !== bOnAir) return bOnAir - aOnAir; // On-air first
+    const aOnAir = (a.is_on_air === 1 || a.airing_status === 'Returning Series' || a.airing_status === 'In Production') ? 1 : 0;
+    const bOnAir = (b.is_on_air === 1 || b.airing_status === 'Returning Series' || b.airing_status === 'In Production') ? 1 : 0;
+    if (aOnAir !== bOnAir) return bOnAir - aOnAir; // On-air / Returning series first
 
     const aYear = a.year || 0;
     const bYear = b.year || 0;

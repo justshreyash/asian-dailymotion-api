@@ -58,6 +58,29 @@ async function resolveHubDrive(driveUrl: string): Promise<string> {
 // HubCloud resolver — the core resolution chain
 // ---------------------------------------------------------------------------
 
+async function isValidDirectStreamUrl(url: string): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 6000);
+    const resp = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'User-Agent': BROWSER_UA,
+        'Range': 'bytes=0-1000',
+      },
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    if (resp.status >= 400) return false;
+    const cType = (resp.headers.get('content-type') || '').toLowerCase();
+    if (cType.includes('text/html')) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function resolveHubCloud(driveUrl: string): Promise<string> {
   const driveResp = await fetchWithUA(driveUrl);
   const driveHtml = await driveResp.text();
@@ -72,9 +95,11 @@ async function resolveHubCloud(driveUrl: string): Promise<string> {
   // Collect all candidate URLs with scores
   const candidates: [number, string][] = [];
 
-  // 1. Script pixeldrain URLs
+  // 1. Script pixeldrain URLs (ignore dummy template IDs like negn6f)
   for (const url of extractScriptPixeldrainUrls(resolverHtml)) {
-    candidates.push([score(url, 'PixelDrain'), url]);
+    if (!url.includes('negn6f')) {
+      candidates.push([score(url, 'PixelDrain'), url]);
+    }
   }
 
   // 2. Links in resolver page
@@ -84,6 +109,9 @@ async function resolveHubCloud(driveUrl: string): Promise<string> {
     const href = $(el).attr('href');
     if (!href) return;
     const label = $(el).text().trim();
+
+    // Ignore placeholder dummy IDs
+    if (href.includes('negn6f')) return;
 
     // Unwrap watch-online redirects
     const unwrapped = unwrapWatchOnlineUrl(href);
@@ -105,18 +133,28 @@ async function resolveHubCloud(driveUrl: string): Promise<string> {
   // Sort by score ascending (lower = better)
   candidates.sort((a, b) => a[0] - b[0]);
 
-  // Try candidates in priority order
+  // Try candidates in priority order and verify live stream accessibility
   for (const [, rawCandidate] of candidates) {
-    const candidateUrl = unwrapDirectUrl(rawCandidate);
+    let candidateUrl = unwrapDirectUrl(rawCandidate);
     if (candidateUrl.includes('pixel.hubcloud.') || candidateUrl.includes('workers.dev')) {
       try {
         const resolved = await followRedirectToFinal(candidateUrl);
-        return unwrapDirectUrl(resolved);
+        candidateUrl = unwrapDirectUrl(resolved);
       } catch {
         continue;
       }
     }
-    return candidateUrl;
+
+    // Verify candidate is actually reachable and streams video bytes
+    const isLive = await isValidDirectStreamUrl(candidateUrl);
+    if (isLive) {
+      return candidateUrl;
+    }
+  }
+
+  // If validation failed on all, return first candidate as fallback if available
+  if (candidates.length > 0) {
+    return unwrapDirectUrl(candidates[0][1]);
   }
 
   throw new Error('No playable stream mirrors found in HubCloud');
@@ -341,7 +379,7 @@ function pixeldrainApiUrl(raw: string): string | null {
     }
 
     if (!id || !/^[a-zA-Z0-9_-]+$/.test(id)) return null;
-    return `https://${url.hostname}/api/file/${id}?download`;
+    return `https://pixeldrain.com/api/file/${id}?download`;
   } catch {
     return null;
   }
@@ -388,27 +426,32 @@ function validatePlaybackUrl(raw: string): string {
 function score(url: string, label: string): number {
   const value = `${url} ${label}`.toLowerCase();
 
+  // Pixeldrain direct API links are universally reachable by Dailymotion ingest bot
+  if (value.includes('pixeldrain.com') || value.includes('pixeldrain.dev')) {
+    return 0;
+  }
   if (
     value.includes('pixel.hubcloud.') ||
-    value.includes('googleusercontent.com') ||
-    value.includes('googlevideo.com') ||
+    value.includes('hubcloud.cx/re/') ||
+    value.includes('hubcloud.fans/re/')
+  ) {
+    return 1;
+  }
+  if (
     value.includes('cloudflarestorage.com') ||
     value.includes('r2.cloudflarestorage.com') ||
     value.includes('fsl server') ||
     value.includes('r2.dev') ||
     value.includes('watch online')
   ) {
-    return 0;
+    return 2;
   }
   if (
     value.includes('storage.googleapis.com') ||
-    value.includes('hubcloud.cx/re/') ||
-    value.includes('hubcloud.fans/re/')
+    value.includes('googleusercontent.com') ||
+    value.includes('googlevideo.com')
   ) {
-    return 1;
-  }
-  if (value.includes('pixeldrain')) {
-    return 2;
+    return 3;
   }
   if (
     value.includes('testzip.php') ||
@@ -416,9 +459,9 @@ function score(url: string, label: string): number {
     value.includes('drive.php') ||
     value.includes('gpdl.')
   ) {
-    return 3;
+    return 4;
   }
-  return 4;
+  return 5;
 }
 
 // ---------------------------------------------------------------------------
