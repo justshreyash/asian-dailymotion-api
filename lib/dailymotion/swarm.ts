@@ -133,9 +133,8 @@ export class DmSwarm {
         }
 
         // Check if it's a rate limit or quota error
-        if (result.error?.includes('429') || result.error?.includes('403') || result.error?.includes('quota')) {
-          console.log(`  ⚠️ Account "${account.label}" quota/rate limited, deactivating...`);
-          await deactivateDmAccount(account.id);
+        if (result.error?.includes('429') || result.error?.includes('403') || result.error?.includes('quota') || result.error?.includes('upload_limit_exceeded') || result.error?.includes('slow down')) {
+          console.log(`  ⚠️ Account "${account.label}" reached rate limit or daily quota. Bypassing node for this batch.`);
           continue;
         }
 

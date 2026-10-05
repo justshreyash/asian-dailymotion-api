@@ -76,6 +76,22 @@ export async function PATCH(request: NextRequest) {
   }
 }
 
+export async function PUT(request: NextRequest) {
+  if (!verifyAdminRequest(request)) {
+    return NextResponse.json({ error: 'Unauthorized: invalid or missing admin credentials' }, { status: 401 });
+  }
+
+  try {
+    const { dbRun } = await import('@/lib/db/client');
+    const { resetHoldVideos } = await import('@/lib/db/queries');
+    await dbRun("UPDATE dm_accounts SET is_active = 1 WHERE status = 'active'");
+    const resetCount = await resetHoldVideos();
+    return NextResponse.json({ success: true, message: `All healthy swarm drives activated and ${resetCount} hold videos released.` });
+  } catch (err) {
+    return NextResponse.json({ error: (err as Error).message }, { status: 500 });
+  }
+}
+
 export async function DELETE(request: NextRequest) {
   if (!verifyAdminRequest(request)) {
     return NextResponse.json({ error: 'Unauthorized: invalid or missing admin credentials' }, { status: 401 });

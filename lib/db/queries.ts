@@ -524,8 +524,8 @@ export async function addDmAccount(data: {
   return dbGet<DmAccountRow>('SELECT * FROM dm_accounts WHERE label = ? ORDER BY id DESC LIMIT 1', [data.label]);
 }
 
-export const DAILY_UPLOAD_LIMIT = 14;
-export const DAILY_DURATION_LIMIT_SECONDS = 34200; // 9.5 hours
+export const DAILY_UPLOAD_LIMIT = 10;
+export const DAILY_DURATION_LIMIT_SECONDS = 7200; // 2.0 hours (Dailymotion free creator daily limit)
 export const MAX_ALLOWED_STRIKES = 2; // Auto-quarantine at 2 strikes to prevent account termination
 
 async function performDailyResetIfNeeded(): Promise<void> {

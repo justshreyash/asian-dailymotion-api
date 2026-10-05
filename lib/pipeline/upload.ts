@@ -214,8 +214,8 @@ export async function runUploads(options: UploadRunOptions = {}) {
             if (result === 'uploaded') {
               uploadedEpsCount++;
               uploadsAttempted++;
-              // Rate limit buffer between successful uploads
-              await sleep(2000);
+              // Safe spacing between uploads to prevent Dailymotion burst rate limit errors
+              await sleep(12000);
             } else if (result === 'on_hold') {
               itemsPutOnHold++;
               // Continue scanning next episodes / titles to bin-pack smaller items
