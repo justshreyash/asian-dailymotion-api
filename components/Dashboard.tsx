@@ -105,8 +105,8 @@ interface VideoFile {
   created_at: string;
 }
 
-const DAILY_UPLOAD_LIMIT = 10;
-const DAILY_DURATION_LIMIT_SECONDS = 7200; // 2.0 hours (Dailymotion free account daily limit)
+const DAILY_UPLOAD_LIMIT = 14;
+const DAILY_DURATION_LIMIT_SECONDS = 34200; // 9.5 hours (Standard Creator 10h/day limit)
 
 export default function Dashboard() {
   const [hasMounted, setHasMounted] = useState(false);
@@ -903,28 +903,6 @@ export default function Dashboard() {
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            {activeTab === 'nodes' && (
-              <button
-                onClick={handleActivateAllDrives}
-                title="Activate all healthy swarm drives and reset any hold queue videos"
-                style={{
-                  background: 'rgba(16,185,129,0.12)',
-                  border: '1px solid rgba(16,185,129,0.3)',
-                  color: '#34d399',
-                  padding: '5px 12px',
-                  borderRadius: '5px',
-                  fontSize: '12px',
-                  fontWeight: '600',
-                  cursor: 'pointer',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '5px',
-                }}
-              >
-                <CheckCircle2 size={13} />
-                <span>Activate All Drives</span>
-              </button>
-            )}
 
             <button
               onClick={() => setIsAddModalOpen(true)}
@@ -1283,8 +1261,8 @@ export default function Dashboard() {
                       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#64748b', marginBottom: '4px' }}>
                         <span>Daily Videos: {dailyUploads} / {DAILY_UPLOAD_LIMIT}</span>
                         <span>
-                          Daily Duration: {dailyHours.toFixed(1)}h / 2.0h
-                          {dailyHours >= 1.9 && <span style={{ color: '#f59e0b', marginLeft: '4px', fontWeight: '600' }}>(2h Quota Met)</span>}
+                          Daily Duration: {dailyHours.toFixed(1)}h / 9.5h
+                          {dailyHours >= 9.0 && <span style={{ color: '#f59e0b', marginLeft: '4px', fontWeight: '600' }}>(Daily Limit Near)</span>}
                         </span>
                       </div>
 
