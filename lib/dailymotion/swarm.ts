@@ -43,28 +43,56 @@ export interface AccountCapacity {
   isActive: boolean;
 }
 
+// In-memory swarm state for intelligent pacing & failure isolation
+const nodeCooldowns = new Map<number, number>(); // accountId -> cooldown expiry timestamp (ms)
+let lastUploadedAccountId: number | null = null;
+let consecutiveUploadsOnNode: number = 0;
+
 export class DmSwarm {
   /**
    * Get all active accounts that have enough remaining daily capacity for the requested duration.
+   * Filters out any accounts currently in a temporary rate-limit cooldown.
+   * If a node just completed 2 consecutive uploads, rotates other nodes to the front.
    */
   async getQualifiedAccounts(estimatedDurationSeconds = 3600, sizeMb?: number): Promise<DmAccountRow[]> {
+    const now = Date.now();
     const accounts = await getActiveDmAccounts();
-    return accounts.filter(account => {
+
+    let qualified = accounts.filter(account => {
+      const cooldownUntil = nodeCooldowns.get(account.id);
+      if (cooldownUntil && cooldownUntil > now) {
+        return false;
+      }
       const remainingUploads = DAILY_UPLOAD_LIMIT - (account.daily_upload_count || 0);
       const remainingDuration = DAILY_DURATION_LIMIT_SECONDS - (account.daily_duration_seconds || 0);
       return remainingUploads > 0 && remainingDuration >= estimatedDurationSeconds;
     });
+
+    // If multiple nodes are available and the current node reached 2 consecutive uploads,
+    // prioritize other nodes to enforce the 2-per-node swarm rotation policy
+    if (qualified.length > 1 && lastUploadedAccountId != null && consecutiveUploadsOnNode >= 2) {
+      qualified = [
+        ...qualified.filter(a => a.id !== lastUploadedAccountId),
+        ...qualified.filter(a => a.id === lastUploadedAccountId),
+      ];
+    }
+
+    return qualified;
   }
 
   /**
    * Returns the maximum duration (in seconds) available on any single active account in the swarm.
    */
   async getMaxRemainingDuration(): Promise<number> {
+    const now = Date.now();
     const accounts = await getActiveDmAccounts();
     if (accounts.length === 0) return 0;
     
     let maxRemaining = 0;
     for (const acc of accounts) {
+      const cooldownUntil = nodeCooldowns.get(acc.id);
+      if (cooldownUntil && cooldownUntil > now) continue;
+
       if (acc.daily_upload_count < DAILY_UPLOAD_LIMIT) {
         const rem = DAILY_DURATION_LIMIT_SECONDS - (acc.daily_duration_seconds || 0);
         if (rem > maxRemaining) {
@@ -94,7 +122,7 @@ export class DmSwarm {
     if (accounts.length === 0) {
       const allActive = await getActiveDmAccounts();
       if (allActive.length === 0) {
-        return { success: false, error: 'No active DM accounts available (all exhausted or deactivated)' };
+        return { success: false, error: 'No active DM accounts available (all exhausted, quarantined, or deactivated)' };
       }
       return {
         success: false,
@@ -120,7 +148,15 @@ export class DmSwarm {
         if (result.success) {
           const duration = result.duration || estimatedDuration;
           await incrementDmAccountUpload(account.id, duration);
-          console.log(`  ✅ Uploaded via "${account.label}" (${account.daily_upload_count + 1}/${DAILY_UPLOAD_LIMIT} today, ${Math.round(duration / 60)}m) → ${result.videoId}`);
+
+          if (lastUploadedAccountId === account.id) {
+            consecutiveUploadsOnNode++;
+          } else {
+            lastUploadedAccountId = account.id;
+            consecutiveUploadsOnNode = 1;
+          }
+
+          console.log(`  ✅ Uploaded via "${account.label}" (${account.daily_upload_count + 1}/${DAILY_UPLOAD_LIMIT} today, ${consecutiveUploadsOnNode} on node, ${Math.round(duration / 60)}m) → ${result.videoId}`);
           return {
             success: true,
             accountId: account.id,
@@ -134,7 +170,8 @@ export class DmSwarm {
 
         // Check if it's a rate limit or quota error
         if (result.error?.includes('429') || result.error?.includes('403') || result.error?.includes('quota') || result.error?.includes('upload_limit_exceeded') || result.error?.includes('slow down')) {
-          console.log(`  ⚠️ Account "${account.label}" reached rate limit or daily quota. Bypassing node for this batch.`);
+          console.log(`  ⚠️ Node "${account.label}" hit velocity rate limit ("${result.error}"). Placing on 15m cooldown, automatically switching to next drive.`);
+          nodeCooldowns.set(account.id, Date.now() + 15 * 60 * 1000);
           continue;
         }
 

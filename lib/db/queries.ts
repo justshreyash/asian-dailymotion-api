@@ -552,7 +552,7 @@ export async function getActiveDmAccounts(): Promise<DmAccountRow[]> {
       AND COALESCE(strike_count, 0) < ?
       AND daily_upload_count < ?
       AND COALESCE(daily_duration_seconds, 0) < ?
-    ORDER BY daily_upload_count ASC, COALESCE(daily_duration_seconds, 0) ASC, upload_count ASC
+    ORDER BY COALESCE(last_used_at, '1970-01-01') ASC, daily_upload_count ASC
   `, [MAX_ALLOWED_STRIKES, DAILY_UPLOAD_LIMIT, DAILY_DURATION_LIMIT_SECONDS]);
 }
 
