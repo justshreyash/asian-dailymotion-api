@@ -18,6 +18,13 @@ export async function runTmdbResolution() {
     const match = await tmdb.matchTitle(title.title, title.kind, title.year || undefined);
 
     if (match) {
+      const MIN_RELEASE_YEAR = 2024;
+      if (match.year != null && match.year < MIN_RELEASE_YEAR) {
+        console.log(`    ⏭️ Skipped (TMDB Year ${match.year} < 2024): "${title.title}"`);
+        await updateTitleStatus(title.id, 'skipped');
+        continue;
+      }
+
       console.log(`    ✅ Matched! TMDB ID: ${match.tmdbId} (Year: ${match.year || 'unknown'}, Status: ${match.airingStatus || 'Ended'}, OnAir: ${match.isOnAir})`);
       await updateTitleTmdb(title.id, match.tmdbId, match.seasons, match.episodes, {
         year: match.year,

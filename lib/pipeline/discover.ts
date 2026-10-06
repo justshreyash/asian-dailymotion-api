@@ -62,6 +62,13 @@ export async function runDiscovery(maxPages = 15) {
       }
       const allLangs = [...new Set([...pageLangs, ...releaseLangs])];
 
+      // Enforce Catalog Rule: Minimum Release Year is 2024 (2024, 2025, 2026+)
+      const MIN_RELEASE_YEAR = 2024;
+      if (details.year != null && details.year < MIN_RELEASE_YEAR) {
+        console.log(`  ⏭️ Skipped (Pre-2024 release: ${details.year}): ${details.title}`);
+        continue;
+      }
+
       if (meetsAudioCriteria(allLangs)) {
         await upsertTitle({
           slug: item.id,
@@ -72,7 +79,7 @@ export async function runDiscovery(maxPages = 15) {
           audioLangs: allLangs,
         });
         discoveredCount++;
-        console.log(`  ✅ Added/Updated: ${details.title}`);
+        console.log(`  ✅ Added/Updated: ${details.title} (${details.year || 'unknown year'})`);
       } else {
         console.log(`  ⏭️ Skipped (Non-KR audio): ${details.title}`);
       }

@@ -47,15 +47,22 @@ export async function runUploads(options: UploadRunOptions = {}) {
   let uploadsAttempted = 0;
   let itemsPutOnHold = 0;
 
-  // 1. Fetch candidate titles (only mapped TMDB titles, exclude failed and blacklisted)
+  // 1. Fetch candidate titles (only mapped TMDB titles >= 2024, exclude failed, blacklisted, and skipped)
+  const MIN_RELEASE_YEAR = 2024;
   const allTitles = await getAllTitles();
-  let titles = allTitles.filter(t => t.tmdb_id != null && t.status !== 'failed' && t.status !== 'blacklisted');
+  let titles = allTitles.filter(t => 
+    t.tmdb_id != null && 
+    t.status !== 'failed' && 
+    t.status !== 'blacklisted' &&
+    t.status !== 'skipped' &&
+    (t.year == null || t.year >= MIN_RELEASE_YEAR)
+  );
 
   // 2. Prioritize: 
   // Priority 1: explicitly requested title (e.g. prioritizeTmdbId)
   // Priority 2: DRAMAS / TV SERIES FIRST (kind === 'series' ALWAYS before kind === 'movie')
   // Priority 3: on-air series (active releases currently broadcasting)
-  // Priority 4: release year descending (2026 -> 2025 -> 2024 -> 2023 -> 2022 -> 2021 -> 2020)
+  // Priority 4: release year descending (2026 -> 2025 -> 2024)
   // Priority 5: in-progress processing titles (status = 'processing')
   // Priority 6: newest discovered date (created_at DESC)
   titles.sort((a, b) => {
@@ -74,7 +81,7 @@ export async function runUploads(options: UploadRunOptions = {}) {
     const bOnAir = (b.is_on_air === 1 || b.airing_status === 'Returning Series' || b.airing_status === 'In Production') ? 1 : 0;
     if (aOnAir !== bOnAir) return bOnAir - aOnAir;
 
-    // 3. Release Year descending (2026 -> 2025 -> 2024 -> 2023 -> 2022 -> 2021 -> 2020)
+    // 3. Release Year descending (2026 -> 2025 -> 2024)
     const aYear = a.year || 0;
     const bYear = b.year || 0;
     if (aYear !== bYear) return bYear - aYear;
