@@ -688,10 +688,11 @@ export async function addDmAccount(data: {
   apiKey: string;
   apiSecret: string;
 }): Promise<DmAccountRow | undefined> {
+  const today = new Date().toISOString().slice(0, 10);
   await dbRun(`
-    INSERT INTO dm_accounts (label, api_key, api_secret, strike_count, status, is_active)
-    VALUES (?, ?, ?, 0, 'active', 1)
-  `, [data.label, data.apiKey, data.apiSecret]);
+    INSERT INTO dm_accounts (label, api_key, api_secret, strike_count, status, is_active, daily_upload_count, daily_duration_seconds, daily_reset_at)
+    VALUES (?, ?, ?, 0, 'active', 1, 0, 0, ?)
+  `, [data.label, data.apiKey, data.apiSecret, today]);
 
   // When a new account is added to the swarm, immediately release any on-hold videos back to pending
   await resetHoldVideos();
