@@ -52,24 +52,34 @@ export async function runUploads(options: UploadRunOptions = {}) {
   let titles = allTitles.filter(t => t.tmdb_id != null && t.status !== 'failed' && t.status !== 'blacklisted');
 
   // 2. Prioritize: 
-  // Priority 1: explicitly requested title (e.g. 314939)
-  // Priority 2: on-air series (active releases currently broadcasting)
-  // Priority 3: latest release year descending (2026 -> 2025 -> 2024 -> ...)
-  // Priority 4: in-progress series (status = 'processing')
-  // Priority 5: newest discovered date (created_at DESC)
+  // Priority 1: explicitly requested title (e.g. prioritizeTmdbId)
+  // Priority 2: DRAMAS / TV SERIES FIRST (kind === 'series' ALWAYS before kind === 'movie')
+  // Priority 3: on-air series (active releases currently broadcasting)
+  // Priority 4: release year descending (2026 -> 2025 -> 2024 -> 2023 -> 2022 -> 2021 -> 2020)
+  // Priority 5: in-progress processing titles (status = 'processing')
+  // Priority 6: newest discovered date (created_at DESC)
   titles.sort((a, b) => {
     if (options.prioritizeTmdbId) {
       if (a.tmdb_id === options.prioritizeTmdbId) return -1;
       if (b.tmdb_id === options.prioritizeTmdbId) return 1;
     }
+
+    // 1. TOP PRIORITY: Dramas / TV Series ALWAYS come before Movies!
+    const aIsSeries = a.kind === 'series' ? 1 : 0;
+    const bIsSeries = b.kind === 'series' ? 1 : 0;
+    if (aIsSeries !== bIsSeries) return bIsSeries - aIsSeries; // 1 (series) comes before 0 (movie)
+
+    // 2. On-Air / Returning series first
     const aOnAir = (a.is_on_air === 1 || a.airing_status === 'Returning Series' || a.airing_status === 'In Production') ? 1 : 0;
     const bOnAir = (b.is_on_air === 1 || b.airing_status === 'Returning Series' || b.airing_status === 'In Production') ? 1 : 0;
-    if (aOnAir !== bOnAir) return bOnAir - aOnAir; // On-air / Returning series first
+    if (aOnAir !== bOnAir) return bOnAir - aOnAir;
 
+    // 3. Release Year descending (2026 -> 2025 -> 2024 -> 2023 -> 2022 -> 2021 -> 2020)
     const aYear = a.year || 0;
     const bYear = b.year || 0;
-    if (aYear !== bYear) return bYear - aYear; // 2026 -> 2025 -> 2024 ...
+    if (aYear !== bYear) return bYear - aYear;
 
+    // 4. In-progress processing titles
     const aProcessing = a.status === 'processing' ? 1 : 0;
     const bProcessing = b.status === 'processing' ? 1 : 0;
     if (aProcessing !== bProcessing) return bProcessing - aProcessing;

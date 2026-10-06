@@ -8,13 +8,14 @@ import { parseDetails, parseAllReleases, extractPageAudioLanguages } from '../sc
 import { meetsAudioCriteria } from '../utils/audio-filter';
 import { upsertTitle } from '../db/queries';
 
-export async function runDiscovery(maxPages = 3) {
+export async function runDiscovery(maxPages = 15) {
   const client = new FourKHdHubClient();
   let discoveredCount = 0;
 
-  console.log(`\n🔍 Starting Discovery Pipeline (max ${maxPages} pages)...`);
+  console.log(`\n🔍 Starting Deep Discovery Pipeline (Dramas/Series first, up to ${maxPages} pages per category)...`);
 
   let allResults: any[] = [];
+  // Prioritize Korean Drama and Series categories first
   const categories = ['korean-drama', 'korean-series', 'korean-movies'];
 
   for (const category of categories) {
@@ -22,12 +23,15 @@ export async function runDiscovery(maxPages = 3) {
     for (let page = 1; page <= maxPages; page++) {
       try {
         const results = await client.listCategory(category, page);
+        if (results.length === 0) {
+          console.log(`  Page ${page}: No more titles found. End of category.`);
+          break;
+        }
         console.log(`  Page ${page}: ${results.length} titles`);
         allResults.push(...results);
-        if (results.length === 0) break;
-        await sleep(1500);
+        await sleep(1000);
       } catch (e) {
-        console.log(`  Page ${page} failed: ${(e as Error).message}`);
+        console.log(`  Page ${page} reached end/failed: ${(e as Error).message}`);
         break;
       }
     }

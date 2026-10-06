@@ -17,11 +17,12 @@ async function main() {
   console.log('🚀 Starting Catalog Discovery & TMDB Resolution');
   await initSchema();
 
-  // Pages to scrape per category (default: 3 pages ~ 54 titles per category)
-  const maxPages = parseInt(process.env.DISCOVERY_PAGES || '3', 10);
+  // Pages to scrape per category (default: 15 pages to cover all releases down to 2024/2020)
+  const pageArg = process.argv.find(a => a.startsWith('--pages='));
+  const maxPages = pageArg ? parseInt(pageArg.split('=')[1], 10) : parseInt(process.env.DISCOVERY_PAGES || '15', 10);
 
   console.log('\n=======================================');
-  console.log(`PHASE 1: 4KHDHub Discovery (${maxPages} pages/category)`);
+  console.log(`PHASE 1: 4KHDHub Discovery (${maxPages} pages/category - Dramas/Series prioritized)`);
   console.log('=======================================');
   const count = await runDiscovery(maxPages);
   console.log(`\n🎉 Discovery phase complete. Found ${count} qualifying titles.`);
