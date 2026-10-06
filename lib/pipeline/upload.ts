@@ -247,6 +247,27 @@ export async function runUploads(options: UploadRunOptions = {}) {
               continue;
             }
 
+            // Check swarm max available capacity vs temporary burst cooldowns before processing episode
+            let maxCapacitySeconds = await swarm.getMaxRemainingDuration();
+            if (maxCapacitySeconds < 300) {
+              const dailyRemaining = await swarm.getDailyRemainingDuration();
+              if (dailyRemaining < 300) {
+                console.log(`\n🛑 All Dailymotion accounts exhausted true daily limits for today. Stopping uploads.`);
+                break;
+              }
+
+              const waitSec = await swarm.getMinCooldownRemainingSeconds();
+              const currentElapsed = (Date.now() - startTime) / 1000;
+              if (waitSec > 0 && currentElapsed + waitSec < maxExecutionSeconds) {
+                console.log(`\n⏳ Swarm hit burst rate limit. Auto-waiting ${Math.round(waitSec / 60)}m (${waitSec}s) for Dailymotion window to reset...`);
+                await sleep(waitSec * 1000);
+                maxCapacitySeconds = await swarm.getMaxRemainingDuration();
+              } else {
+                console.log(`\n⏳ Swarm nodes in temporary burst cooldown. Next batch will resume automatically.`);
+                break;
+              }
+            }
+
             console.log(`  📦 Checking S${s}E${e} (${bestReleases.length} releases available${excludeSizesMb.length > 0 ? ', fallback diversity active' : ''})`);
             const result = await attemptUpload(client, swarm, title.id, title.tmdb_id, false, s, e, bestReleases);
             
@@ -257,7 +278,13 @@ export async function runUploads(options: UploadRunOptions = {}) {
               await sleep(20000);
             } else if (result === 'on_hold') {
               itemsPutOnHold++;
-              // Continue scanning next episodes / titles to bin-pack smaller items
+              // If on hold due to burst cooldown, let next iteration evaluate cooldown wait
+              const rem = await swarm.getMaxRemainingDuration();
+              if (rem < 300) {
+                // Decrement episode index so it retries this exact episode after cooldown
+                e--;
+                continue;
+              }
             }
           }
           if (uploadsAttempted >= maxUploads) break;
@@ -312,6 +339,11 @@ async function attemptUpload(
   // Check if any active account has capacity for this duration
   const qualifiedAccounts = await swarm.getQualifiedAccounts(estimatedDurationSeconds, bestReleases[0]?.sizeMb);
   if (qualifiedAccounts.length === 0) {
+    const dailyRemaining = await swarm.getDailyRemainingDuration();
+    if (dailyRemaining >= estimatedDurationSeconds) {
+      // Temporary cooldown, not daily limit exceeded
+      return 'on_hold';
+    }
     const maxRemaining = await swarm.getMaxRemainingDuration();
     const reason = `Exceeds current node daily capacity (~${Math.round(estimatedDurationSeconds / 60)}m required, max available is ${Math.round(maxRemaining / 60)}m). Deferred on hold.`;
     console.log(`    ⏸️ [ON HOLD] ${reason}`);
