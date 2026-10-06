@@ -18,11 +18,13 @@ async function main() {
 
   const maxArg = process.argv.find(a => a.startsWith('--max='));
   const tmdbArg = process.argv.find(a => a.startsWith('--tmdb='));
+  const timeoutArg = process.argv.find(a => a.startsWith('--timeout='));
 
   const maxUploads = maxArg ? parseInt(maxArg.split('=')[1], 10) : undefined;
   const prioritizeTmdbId = tmdbArg ? parseInt(tmdbArg.split('=')[1], 10) : undefined;
+  const maxExecutionSeconds = timeoutArg ? parseInt(timeoutArg.split('=')[1], 10) : 7200; // 2 hours default for local runner
 
-  await runUploads({ maxUploads, prioritizeTmdbId });
+  await runUploads({ maxUploads, prioritizeTmdbId, maxExecutionSeconds });
 
   console.log('\n✅ Upload run complete.');
   closeDb();
