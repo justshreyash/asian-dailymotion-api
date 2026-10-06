@@ -26,8 +26,8 @@ async function executePipelineJob() {
     await runTmdbResolution();
     await syncAiringSeriesDetails();
 
-    // 4. Process Uploads with greedy bin-packing
-    await runUploads({ maxUploads: 8 });
+    // 4. Process Uploads with greedy bin-packing (automatically fills all available swarm node quotas)
+    await runUploads();
 
     console.log('\n=======================================');
     console.log('✅ PIPELINE BATCH EXECUTION COMPLETED');
