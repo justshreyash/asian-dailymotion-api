@@ -109,11 +109,26 @@ export async function runUploads(options: UploadRunOptions = {}) {
       break;
     }
 
-    // Check swarm max available capacity
-    const maxCapacitySeconds = await swarm.getMaxRemainingDuration();
-    if (maxCapacitySeconds < 300) { // Less than 5 minutes anywhere
-      console.log(`\n🛑 All Dailymotion accounts exhausted (14 vids or 9.5 hrs limit) for today. Stopping uploads.`);
-      break;
+    // Check swarm max available capacity vs temporary burst cooldowns
+    let maxCapacitySeconds = await swarm.getMaxRemainingDuration();
+    if (maxCapacitySeconds < 300) {
+      const dailyRemaining = await swarm.getDailyRemainingDuration();
+      if (dailyRemaining < 300) {
+        console.log(`\n🛑 All Dailymotion accounts exhausted true daily limits (14 vids or 9.5 hrs limit) for today. Stopping uploads.`);
+        break;
+      }
+
+      // Swarm is in temporary burst rate limit cooldown
+      const waitSec = await swarm.getMinCooldownRemainingSeconds();
+      const currentElapsed = (Date.now() - startTime) / 1000;
+      if (waitSec > 0 && currentElapsed + waitSec < maxExecutionSeconds) {
+        console.log(`\n⏳ Swarm nodes in temporary burst cooldown. Waiting ${Math.round(waitSec / 60)}m (${waitSec}s) for rate limit window to reset before automatically resuming uploads...`);
+        await sleep(waitSec * 1000);
+        maxCapacitySeconds = await swarm.getMaxRemainingDuration();
+      } else {
+        console.log(`\n⏳ Swarm nodes in temporary burst cooldown. Next hourly run will resume automatically.`);
+        break;
+      }
     }
 
     console.log(`\n📺 Processing: ${title.title} (${title.kind.toUpperCase()}${title.is_on_air ? ' - ON AIR' : ''}) [Swarm Max Free: ${Math.round(maxCapacitySeconds / 60)}m]`);
@@ -239,7 +254,7 @@ export async function runUploads(options: UploadRunOptions = {}) {
               uploadedEpsCount++;
               uploadsAttempted++;
               // Safe spacing between uploads to prevent Dailymotion burst rate limit errors
-              await sleep(12000);
+              await sleep(20000);
             } else if (result === 'on_hold') {
               itemsPutOnHold++;
               // Continue scanning next episodes / titles to bin-pack smaller items

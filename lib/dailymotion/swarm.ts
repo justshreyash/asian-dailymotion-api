@@ -105,6 +105,47 @@ export class DmSwarm {
   }
 
   /**
+   * Returns true daily remaining capacity regardless of temporary rate-limit cooldowns.
+   */
+  async getDailyRemainingDuration(): Promise<number> {
+    const accounts = await getActiveDmAccounts();
+    let maxRemaining = 0;
+    for (const acc of accounts) {
+      if (acc.daily_upload_count < DAILY_UPLOAD_LIMIT) {
+        const rem = DAILY_DURATION_LIMIT_SECONDS - (acc.daily_duration_seconds || 0);
+        if (rem > maxRemaining) {
+          maxRemaining = rem;
+        }
+      }
+    }
+    return maxRemaining;
+  }
+
+  /**
+   * Returns the minimum number of seconds until at least one account exits cooldown.
+   */
+  async getMinCooldownRemainingSeconds(): Promise<number> {
+    const now = Date.now();
+    const accounts = await getActiveDmAccounts();
+    let minWaitMs = Infinity;
+
+    for (const acc of accounts) {
+      if (acc.daily_upload_count >= DAILY_UPLOAD_LIMIT) continue;
+      if (DAILY_DURATION_LIMIT_SECONDS - (acc.daily_duration_seconds || 0) < 1800) continue;
+
+      const cooldown = nodeCooldowns.get(acc.id);
+      if (!cooldown || cooldown <= now) {
+        return 0; // Account is ready right now!
+      }
+      if (cooldown - now < minWaitMs) {
+        minWaitMs = cooldown - now;
+      }
+    }
+
+    return minWaitMs === Infinity ? 0 : Math.ceil(minWaitMs / 1000);
+  }
+
+  /**
    * Upload a video using the best available account from the swarm.
    * Tries qualified accounts in order (least-used first) until one succeeds.
    */
@@ -169,10 +210,10 @@ export class DmSwarm {
           };
         }
 
-        // If this specific account reached its hourly/daily upload rate limit, put it on cooldown and try next node
+        // If this specific account reached its hourly/daily upload rate limit, put it on a 15-minute cooldown and try next node
         if (result.error?.includes('upload_limit_exceeded') || result.error?.includes('slow down') || result.error?.includes('429')) {
-          console.log(`  ⚠️ Account "${account.label}" rate-limited ("${result.error}"). Setting 1-hour cooldown and rotating to next swarm node...`);
-          nodeCooldowns.set(account.id, Date.now() + 60 * 60 * 1000);
+          console.log(`  ⚠️ Account "${account.label}" hit burst rate limit ("${result.error}"). Setting 15-minute cooldown and rotating to next swarm node...`);
+          nodeCooldowns.set(account.id, Date.now() + 15 * 60 * 1000);
           continue;
         }
 
