@@ -34,14 +34,22 @@ export function selectBestReleases(
   const excludeSizes = options.excludeSizesMb || [];
   const excludeKeywords = (options.excludeKeywords || []).map(k => k.toLowerCase());
 
-  // Filter out invalid, oversized, unsupported codecs (AV1), or excluded releases
+  // Filter out invalid, oversized, unsupported codecs (AV1, HDR-DV), or excluded releases
   const filtered = releases.filter(r => {
     if (r.sizeMb && r.sizeMb > MAX_FILE_SIZE_MB) return false;
 
     const lowerTitle = (r.releaseTitle || '').toLowerCase();
 
-    // Dailymotion transcoders do NOT support raw AV1 in MKV/MP4 containers and fail with encoding_error
-    if (lowerTitle.includes('av1') || lowerTitle.includes('av01') || lowerTitle.includes('.av1.')) {
+    // Dailymotion cloud transcoders do NOT support raw AV1 or Dolby Vision (HDR-DV / DV) and fail with encoding_error
+    if (
+      lowerTitle.includes('av1') ||
+      lowerTitle.includes('av01') ||
+      lowerTitle.includes('.av1.') ||
+      lowerTitle.includes('hdr-dv') ||
+      lowerTitle.includes('.dv.') ||
+      lowerTitle.includes('dolby.vision') ||
+      lowerTitle.includes('dolbyvision')
+    ) {
       return false;
     }
 
@@ -75,18 +83,17 @@ export function selectBestReleases(
     let score = 0;
     const title = r.releaseTitle.toUpperCase();
 
-    // If alternative codec preferred, boost H.264/AVC over H.265
-    if (options.preferAlternativeCodec) {
-      if (title.includes('H.264') || title.includes('AVC') || title.includes('X264')) {
-        score += 50;
-      }
+    // H.264 / AVC is the most compatible, 100% reliable format for Dailymotion encoders
+    if (title.includes('H.264') || title.includes('AVC') || title.includes('X264')) {
+      score += 100;
+    } else if (title.includes('H.265') || title.includes('HEVC') || title.includes('X265')) {
+      // Standard SDR H.265 is supported, but secondary to H.264
+      score += 30;
     }
 
-    // If alternative source preferred, boost HULU/AMZN over DSNP
-    if (options.preferAlternativeSource) {
-      if (title.includes('HULU') || title.includes('AMZN') || title.includes('NF')) {
-        score += 40;
-      }
+    // Reliable streaming platforms
+    if (title.includes('NF') || title.includes('AMZN') || title.includes('HULU') || title.includes('DSNP')) {
+      score += 20;
     }
 
     return score;
