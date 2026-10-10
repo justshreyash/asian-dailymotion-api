@@ -259,10 +259,13 @@ export interface VideoRow {
   duration_seconds: number | null;
   upload_status: string;
   error_message: string | null;
+  provider?: string | null;
+  embed_url?: string | null;
   takedown_detected_at?: string | null;
   takedown_reason?: string | null;
   flagged_sources?: string | null;
   title_name?: string;
+  title_slug?: string;
   title_status?: string;
   account_label?: string;
   poster_url?: string | null;
@@ -624,6 +627,71 @@ export async function updateVideoUpload(id: number, data: {
       updated_at = datetime('now')
     WHERE id = ?
   `, [data.dmAccountId, data.dmVideoId, data.dmVideoUrl, data.sourceUrl, data.durationSeconds ?? null, id]);
+}
+
+export async function updatePlaymateVideoUpload(id: number, data: {
+  fileCode: string;
+  embedUrl: string;
+  sourceUrl: string;
+  durationSeconds?: number;
+  resolution?: string;
+}): Promise<void> {
+  await dbRun(`
+    UPDATE videos SET
+      provider = 'playmate',
+      dm_account_id = NULL,
+      dm_video_id = ?,
+      dm_video_url = ?,
+      embed_url = ?,
+      source_url = ?,
+      duration_seconds = COALESCE(?, duration_seconds, 0),
+      resolution = COALESCE(?, resolution),
+      upload_status = 'uploaded',
+      error_message = NULL,
+      updated_at = datetime('now')
+    WHERE id = ?
+  `, [
+    data.fileCode,
+    `https://playmate.to/watch/${data.fileCode}`,
+    data.embedUrl,
+    data.sourceUrl,
+    data.durationSeconds ?? null,
+    data.resolution ?? null,
+    id,
+  ]);
+
+  // Check if title should be healed / marked completed or processing
+  const video = await dbGet<VideoRow>('SELECT * FROM videos WHERE id = ?', [id]);
+  if (video && video.title_id) {
+    const remainingUnuploaded = await dbAll<VideoRow>(
+      "SELECT id FROM videos WHERE title_id = ? AND upload_status != 'uploaded'",
+      [video.title_id]
+    );
+    if (remainingUnuploaded.length === 0) {
+      await updateTitleStatus(video.title_id, 'completed');
+    } else {
+      const title = await dbGet<{ status: string }>('SELECT status FROM titles WHERE id = ?', [video.title_id]);
+      if (title && title.status === 'blacklisted') {
+        await updateTitleStatus(video.title_id, 'processing');
+      }
+    }
+  }
+}
+
+export async function getPlaymateEligibleVideos(): Promise<VideoRow[]> {
+  return dbAll<VideoRow>(`
+    SELECT v.*, t.title as title_name, t.slug as title_slug, t.status as title_status, t.poster_url as poster_url
+    FROM videos v
+    JOIN titles t ON v.title_id = t.id
+    WHERE v.upload_status != 'uploaded'
+      AND (
+        t.status = 'blacklisted'
+        OR v.upload_status IN ('takedown', 'failed')
+        OR v.error_message LIKE '%encoding error%'
+        OR v.error_message LIKE '%Auto-healed%'
+      )
+    ORDER BY t.title, v.season, v.episode
+  `);
 }
 
 export async function updateVideoHold(id: number, reason: string): Promise<void> {

@@ -31,14 +31,21 @@ export async function GET(
     const video = await getVideoByLookup(tmdbId);
     
     if (video && video.upload_status === 'uploaded' && video.dm_video_id) {
+      const isPlaymate = video.provider === 'playmate' || video.dm_video_url?.includes('playmate.to');
+      const embedUrl = video.embed_url || (isPlaymate
+        ? `https://playmate.to/embed/${video.dm_video_id}`
+        : `https://geo.dailymotion.com/player.html?video=${video.dm_video_id}`);
+
       return NextResponse.json({
         tmdb_id: tmdbId,
         title: title.title,
         is_movie: true,
         status: 'ready',
+        provider: isPlaymate ? 'playmate' : 'dailymotion',
         dm_video_id: video.dm_video_id,
         dm_video_url: video.dm_video_url,
-        dm_embed_url: `https://geo.dailymotion.com/player.html?video=${video.dm_video_id}`,
+        dm_embed_url: embedUrl,
+        embed_url: embedUrl,
         resolution: video.resolution || '1080p',
         duration_seconds: video.duration_seconds || 0,
         upload_status: 'uploaded',
@@ -51,7 +58,7 @@ export async function GET(
         title: title.title,
         is_movie: true,
         status: 'pending_upload',
-        message: 'Movie is in the upload queue and awaiting Dailymotion ingestion.',
+        message: 'Movie is in the upload queue and awaiting ingestion.',
         dm_video_id: null,
         dm_video_url: null,
         dm_embed_url: null,
@@ -87,15 +94,23 @@ export async function GET(
     total_seasons: title.total_seasons,
     total_episodes: title.total_episodes,
     uploaded_episodes_count: uploadedVideos.length,
-    episodes: uploadedVideos.map(v => ({
-      season: v.season,
-      episode: v.episode,
-      dm_video_id: v.dm_video_id,
-      dm_video_url: v.dm_video_url,
-      dm_embed_url: `https://geo.dailymotion.com/player.html?video=${v.dm_video_id}`,
-      resolution: v.resolution || '1080p',
-      duration_seconds: v.duration_seconds || 0,
-    })),
+    episodes: uploadedVideos.map(v => {
+      const isPlaymate = v.provider === 'playmate' || v.dm_video_url?.includes('playmate.to');
+      const embedUrl = v.embed_url || (isPlaymate
+        ? `https://playmate.to/embed/${v.dm_video_id}`
+        : `https://geo.dailymotion.com/player.html?video=${v.dm_video_id}`);
+      return {
+        season: v.season,
+        episode: v.episode,
+        provider: isPlaymate ? 'playmate' : 'dailymotion',
+        dm_video_id: v.dm_video_id,
+        dm_video_url: v.dm_video_url,
+        dm_embed_url: embedUrl,
+        embed_url: embedUrl,
+        resolution: v.resolution || '1080p',
+        duration_seconds: v.duration_seconds || 0,
+      };
+    }),
     message: title.is_on_air
       ? `Series is currently on-air. Query /ko/${tmdbId}/{season}/{episode} for individual episode playback.`
       : `Query /ko/${tmdbId}/{season}/{episode} for individual episode playback.`,

@@ -38,6 +38,7 @@ import {
   Code2,
   Layers,
   SlidersHorizontal,
+  UploadCloud,
 } from 'lucide-react';
 import {
   AreaChart,
@@ -590,6 +591,56 @@ export default function Dashboard() {
       }
     } catch (err) {
       console.error('Requeue all failed:', err);
+    }
+  };
+
+  const [playmateLoading, setPlaymateLoading] = useState<number | 'all' | null>(null);
+
+  const handlePlaymateUpload = async (videoId: number) => {
+    try {
+      setPlaymateLoading(videoId);
+      triggerToast('Dispatching video to Playmate fallback hosting (mult-audio)...', 'info');
+      const res = await fetch('/api/admin/playmate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ videoIds: [videoId] }),
+      });
+      const data = await res.json();
+      if (data.status === 'success' && data.result?.uploaded > 0) {
+        triggerToast('Video successfully uploaded to Playmate!', 'success');
+        refreshActiveTabData();
+      } else {
+        triggerToast('Playmate upload failed or could not resolve stream.', 'error');
+      }
+    } catch (err) {
+      console.error('Playmate upload failed:', err);
+      triggerToast('Playmate upload failed.', 'error');
+    } finally {
+      setPlaymateLoading(null);
+    }
+  };
+
+  const handlePlaymateUploadAll = async () => {
+    try {
+      setPlaymateLoading('all');
+      triggerToast('Starting Playmate batch fallback upload for all flagged/blacklisted videos...', 'info');
+      const res = await fetch('/api/admin/playmate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ all: true }),
+      });
+      const data = await res.json();
+      if (data.status === 'success') {
+        triggerToast(`Playmate batch complete! Uploaded ${data.result?.uploaded || 0} videos to mult-audio folder.`, 'success');
+        refreshActiveTabData();
+      } else {
+        triggerToast('Playmate batch upload failed.', 'error');
+      }
+    } catch (err) {
+      console.error('Playmate upload all failed:', err);
+      triggerToast('Playmate batch upload failed.', 'error');
+    } finally {
+      setPlaymateLoading(null);
     }
   };
 
@@ -2407,27 +2458,52 @@ export default function Dashboard() {
                       Public API returns clean fallback; users never see 404 player errors.
                     </span>
                     {takedownTotal > 0 && (
-                      <button
-                        onClick={handleRequeueAllTakedowns}
-                        title="Re-queues all flagged videos to attempt alternative releases and unblocks parent shows"
-                        style={{
-                          background: 'linear-gradient(135deg, #0284c7 0%, #0369a1 100%)',
-                          border: 'none',
-                          color: '#ffffff',
-                          padding: '5px 12px',
-                          borderRadius: '5px',
-                          fontSize: '11px',
-                          fontWeight: '600',
-                          cursor: 'pointer',
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: '5px',
-                          boxShadow: '0 2px 8px rgba(2,132,199,0.3)',
-                        }}
-                      >
-                        <Zap size={12} />
-                        <span>Retry All Alt Encodes</span>
-                      </button>
+                      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                        <button
+                          onClick={handlePlaymateUploadAll}
+                          disabled={playmateLoading === 'all'}
+                          title="Uploads all suspended/blacklisted videos to Playmate hosting (folder: mult-audio)"
+                          style={{
+                            background: 'linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%)',
+                            border: 'none',
+                            color: '#ffffff',
+                            padding: '5px 12px',
+                            borderRadius: '5px',
+                            fontSize: '11px',
+                            fontWeight: '600',
+                            cursor: playmateLoading === 'all' ? 'not-allowed' : 'pointer',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '5px',
+                            boxShadow: '0 2px 8px rgba(124,58,237,0.3)',
+                            opacity: playmateLoading === 'all' ? 0.7 : 1,
+                          }}
+                        >
+                          <UploadCloud size={12} className={playmateLoading === 'all' ? 'animate-pulse' : ''} />
+                          <span>{playmateLoading === 'all' ? 'Uploading...' : 'Heal All on Playmate'}</span>
+                        </button>
+                        <button
+                          onClick={handleRequeueAllTakedowns}
+                          title="Re-queues all flagged videos to attempt alternative releases and unblocks parent shows"
+                          style={{
+                            background: 'linear-gradient(135deg, #0284c7 0%, #0369a1 100%)',
+                            border: 'none',
+                            color: '#ffffff',
+                            padding: '5px 12px',
+                            borderRadius: '5px',
+                            fontSize: '11px',
+                            fontWeight: '600',
+                            cursor: 'pointer',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '5px',
+                            boxShadow: '0 2px 8px rgba(2,132,199,0.3)',
+                          }}
+                        >
+                          <Zap size={12} />
+                          <span>Retry All Alt Encodes</span>
+                        </button>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -2559,6 +2635,29 @@ export default function Dashboard() {
                                     </button>
                                   )
                                 )}
+                                <button
+                                  onClick={() => handlePlaymateUpload(v.id)}
+                                  disabled={playmateLoading === v.id}
+                                  title="Uploads this video directly to Playmate hosting (mult-audio)"
+                                  style={{
+                                    background: 'linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%)',
+                                    border: 'none',
+                                    color: '#ffffff',
+                                    padding: '3px 8px',
+                                    borderRadius: '3px',
+                                    fontSize: '11px',
+                                    fontWeight: '600',
+                                    cursor: playmateLoading === v.id ? 'not-allowed' : 'pointer',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    boxShadow: '0 2px 6px rgba(124,58,237,0.3)',
+                                    opacity: playmateLoading === v.id ? 0.7 : 1,
+                                  }}
+                                >
+                                  <UploadCloud size={11} className={playmateLoading === v.id ? 'animate-pulse' : ''} />
+                                  <span>{playmateLoading === v.id ? '...' : 'Playmate'}</span>
+                                </button>
                                 <button
                                   onClick={() => handleRequeueTakedown(v.id)}
                                   title="Re-queues video to attempt upload from alternative release"

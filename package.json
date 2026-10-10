@@ -11,7 +11,8 @@
     "test:scraper": "tsx scripts/test-scraper.ts",
     "test:upload": "tsx scripts/test-upload.ts",
     "seed:accounts": "tsx scripts/seed-accounts.ts",
-    "db:init": "tsx scripts/init-db.ts"
+    "db:init": "tsx scripts/init-db.ts",
+    "upload:playmate": "tsx scripts/upload-playmate.ts"
   },
   "dependencies": {
     "@libsql/client": "^0.14.0",

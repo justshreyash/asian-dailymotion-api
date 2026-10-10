@@ -21,7 +21,34 @@ export async function GET(
   const title = await getTitleByTmdbId(tmdbId);
   const video = await getVideoByLookup(tmdbId, season, episode);
 
-  // Blacklist check: halt all requests for blacklisted titles
+  // 1. Video is already uploaded and ready (check first before title blacklist)
+  if (video && video.upload_status === 'uploaded' && video.dm_video_id) {
+    const isPlaymate = video.provider === 'playmate' || video.dm_video_url?.includes('playmate.to');
+    const embedUrl = video.embed_url || (isPlaymate
+      ? `https://playmate.to/embed/${video.dm_video_id}`
+      : `https://geo.dailymotion.com/player.html?video=${video.dm_video_id}`);
+
+    return NextResponse.json({
+      tmdb_id: tmdbId,
+      title: title?.title || null,
+      season,
+      episode,
+      status: 'ready',
+      provider: isPlaymate ? 'playmate' : 'dailymotion',
+      is_movie: false,
+      is_on_air: Boolean(title?.is_on_air),
+      airing_status: title?.airing_status || 'Ended',
+      dm_video_id: video.dm_video_id,
+      dm_video_url: video.dm_video_url,
+      dm_embed_url: embedUrl,
+      embed_url: embedUrl,
+      resolution: video.resolution || '1080p',
+      duration_seconds: video.duration_seconds || 0,
+      upload_status: 'uploaded',
+    });
+  }
+
+  // Blacklist check: halt requests for blacklisted titles if video is not uploaded
   if (title?.status === 'blacklisted') {
     return NextResponse.json({
       tmdb_id: tmdbId,
@@ -34,26 +61,6 @@ export async function GET(
       dm_video_url: null,
       dm_embed_url: null,
     }, { status: 403 });
-  }
-
-  // 1. Video is already uploaded and ready
-  if (video && video.upload_status === 'uploaded' && video.dm_video_id) {
-    return NextResponse.json({
-      tmdb_id: tmdbId,
-      title: title?.title || null,
-      season,
-      episode,
-      status: 'ready',
-      is_movie: false,
-      is_on_air: Boolean(title?.is_on_air),
-      airing_status: title?.airing_status || 'Ended',
-      dm_video_id: video.dm_video_id,
-      dm_video_url: video.dm_video_url,
-      dm_embed_url: `https://geo.dailymotion.com/player.html?video=${video.dm_video_id}`,
-      resolution: video.resolution || '1080p',
-      duration_seconds: video.duration_seconds || 0,
-      upload_status: 'uploaded',
-    });
   }
 
   // 2. Video is currently in upload queue / pending

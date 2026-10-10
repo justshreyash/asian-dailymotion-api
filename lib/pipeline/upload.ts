@@ -9,6 +9,7 @@ import { parseReleases, parseAllReleases } from '../scraper/parser';
 import { selectBestReleases } from '../utils/release-picker';
 import { formatDmTitle } from '../utils/title-format';
 import { DmSwarm } from '../dailymotion/swarm';
+import { PlaymateClient } from '../playmate/client';
 import {
   getAllTitles,
   getVideosByTmdbId,
@@ -17,6 +18,7 @@ import {
   DAILY_UPLOAD_LIMIT,
   upsertVideo,
   updateVideoUpload,
+  updatePlaymateVideoUpload,
   updateVideoHold,
   updateVideoError,
   updateTitleStatus,
@@ -379,6 +381,28 @@ async function attemptUpload(
         return 'uploaded';
       } else {
         console.log(`      Upload failed: ${result.error}`);
+
+        // Seamless Playmate fallback
+        try {
+          const playmate = new PlaymateClient();
+          console.log(`      ⚡ Attempting Playmate fallback for [${dmTitle}]...`);
+          const pmRes = await playmate.uploadByRemoteUrl(streamInfo.url, {
+            customTitle: dmTitle,
+          });
+          if (pmRes.success && pmRes.fileCode) {
+            await updatePlaymateVideoUpload(dbVideo.id, {
+              fileCode: pmRes.fileCode,
+              embedUrl: pmRes.embedUrl!,
+              sourceUrl: streamInfo.url,
+              resolution: release.resolution,
+            });
+            console.log(`      ✅ Playmate fallback upload success: ${pmRes.fileCode}`);
+            return 'uploaded';
+          }
+        } catch (pmErr) {
+          console.warn(`      ⚠️ Playmate fallback also failed: ${(pmErr as Error).message}`);
+        }
+
         if (
           result.error?.includes('Capacity hold') || 
           result.error?.includes('requires ~') ||

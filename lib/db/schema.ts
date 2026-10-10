@@ -87,6 +87,8 @@ export async function initSchema(): Promise<void> {
   try { await dbRun("ALTER TABLE videos ADD COLUMN takedown_detected_at TEXT;"); } catch {}
   try { await dbRun("ALTER TABLE videos ADD COLUMN takedown_reason TEXT;"); } catch {}
   try { await dbRun("ALTER TABLE videos ADD COLUMN flagged_sources TEXT DEFAULT '[]';"); } catch {}
+  try { await dbRun("ALTER TABLE videos ADD COLUMN provider TEXT DEFAULT 'dailymotion';"); } catch {}
+  try { await dbRun("ALTER TABLE videos ADD COLUMN embed_url TEXT;"); } catch {}
 
   // Safe index creation
   try { await dbRun('CREATE INDEX IF NOT EXISTS idx_titles_tmdb ON titles(tmdb_id);'); } catch {}
@@ -95,6 +97,7 @@ export async function initSchema(): Promise<void> {
   try { await dbRun('CREATE INDEX IF NOT EXISTS idx_videos_lookup ON videos(tmdb_id, season, episode);'); } catch {}
   try { await dbRun('CREATE INDEX IF NOT EXISTS idx_videos_dm ON videos(dm_video_id);'); } catch {}
   try { await dbRun('CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(upload_status);'); } catch {}
+  try { await dbRun('CREATE INDEX IF NOT EXISTS idx_videos_provider ON videos(provider);'); } catch {}
   try { await dbRun('CREATE INDEX IF NOT EXISTS idx_dm_active ON dm_accounts(is_active);'); } catch {}
 
   console.log('✅ Database schema verified');
